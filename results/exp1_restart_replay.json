@@ -1,0 +1,391 @@
+{
+  "configurations": [
+    {
+      "after": {
+        "committed_checkpoint_id": 5,
+        "group_offsets": {
+          "0": 3098,
+          "1": 3005,
+          "2": 3009,
+          "3": 2888
+        },
+        "topic_end_offsets": {
+          "0": 3098,
+          "1": 3005,
+          "2": 3009,
+          "3": 2888
+        }
+      },
+      "before_kill": {
+        "checkpoints": {
+          "completed": 2,
+          "failed": 0,
+          "in_progress": 0,
+          "restored": 0
+        },
+        "committed_checkpoint_id": 2,
+        "group_offsets": {
+          "0": 1552,
+          "1": 1500,
+          "2": 1490,
+          "3": 1458
+        },
+        "rows": 6000,
+        "topic_end_offsets": {
+          "0": 1946,
+          "1": 1854,
+          "2": 1869,
+          "3": 1831
+        }
+      },
+      "configuration": {
+        "checkpoint_interval": "10s",
+        "checkpointing_mode": "AT_LEAST_ONCE",
+        "parallelism": 2,
+        "write_mode": "append"
+      },
+      "events_produced": 12000,
+      "job_id": "8d6469ab6d8934cf8170f89a892ae44c",
+      "landed": {
+        "complete": true,
+        "distinct_npi": 1998,
+        "duplicate_npi_rows": 10002,
+        "duplicate_seq_rows": 0,
+        "events_expected": 12000,
+        "files": {
+          "avg_data_file_bytes": 23418,
+          "data_bytes": 140508,
+          "data_files": 6,
+          "delete_bytes": 0,
+          "delete_files": 0
+        },
+        "missing_seq_runs": [],
+        "rows": 12000
+      },
+      "prediction": "duplicate rows",
+      "prediction_held": false,
+      "restart": {
+        "checkpoints_after": {
+          "completed": 2,
+          "failed": 2,
+          "in_progress": 1,
+          "restored": 1
+        },
+        "failure_causes": [
+          "org.apache.flink.runtime.resourcemanager.exceptions.ResourceManagerException"
+        ],
+        "job_state_after_restart": "RUNNING",
+        "restored_from": {
+          "checkpoint_id": 2,
+          "is_savepoint": false,
+          "path": "file:/flink-state/checkpoints/8d6469ab6d8934cf8170f89a892ae44c/chk-2"
+        }
+      }
+    },
+    {
+      "after": {
+        "committed_checkpoint_id": 4,
+        "group_offsets": {
+          "0": 3098,
+          "1": 3005,
+          "2": 3009,
+          "3": 2888
+        },
+        "topic_end_offsets": {
+          "0": 3098,
+          "1": 3005,
+          "2": 3009,
+          "3": 2888
+        }
+      },
+      "before_kill": {
+        "checkpoints": {
+          "completed": 2,
+          "failed": 0,
+          "in_progress": 0,
+          "restored": 0
+        },
+        "committed_checkpoint_id": 2,
+        "group_offsets": {
+          "0": 1286,
+          "1": 1241,
+          "2": 1254,
+          "3": 1219
+        },
+        "rows": 1832,
+        "topic_end_offsets": {
+          "0": 1707,
+          "1": 1605,
+          "2": 1604,
+          "3": 1584
+        }
+      },
+      "configuration": {
+        "checkpoint_interval": "10s",
+        "checkpointing_mode": "AT_LEAST_ONCE",
+        "parallelism": 2,
+        "write_mode": "upsert on npi"
+      },
+      "events_produced": 12000,
+      "job_id": "c1a22ad749d413f6f9e904c063f3ff41",
+      "landed": {
+        "complete": true,
+        "distinct_npi": 1998,
+        "duplicate_npi_rows": 0,
+        "duplicate_seq_rows": 0,
+        "files": {
+          "avg_data_file_bytes": 22944,
+          "data_bytes": 137664,
+          "data_files": 6,
+          "delete_bytes": 47453,
+          "delete_files": 12
+        },
+        "missing_seq_runs": null,
+        "providers_expected": 1998,
+        "providers_held": 1998,
+        "providers_not_carrying_the_latest_record": 0,
+        "rows": 1998
+      },
+      "prediction": "no duplicates, idempotent by key",
+      "prediction_held": true,
+      "restart": {
+        "checkpoints_after": {
+          "completed": 3,
+          "failed": 1,
+          "in_progress": 0,
+          "restored": 1
+        },
+        "failure_causes": [
+          "org.apache.flink.runtime.jobmaster.JobMasterException"
+        ],
+        "job_state_after_restart": "RUNNING",
+        "restored_from": {
+          "checkpoint_id": 2,
+          "is_savepoint": false,
+          "path": "file:/flink-state/checkpoints/c1a22ad749d413f6f9e904c063f3ff41/chk-2"
+        }
+      }
+    },
+    {
+      "after": {
+        "committed_checkpoint_id": 5,
+        "group_offsets": {
+          "0": 3098,
+          "1": 3005,
+          "2": 3009,
+          "3": 2888
+        },
+        "topic_end_offsets": {
+          "0": 3098,
+          "1": 3005,
+          "2": 3009,
+          "3": 2888
+        }
+      },
+      "before_kill": {
+        "checkpoints": {
+          "completed": 2,
+          "failed": 0,
+          "in_progress": 0,
+          "restored": 0
+        },
+        "committed_checkpoint_id": 2,
+        "group_offsets": {
+          "0": 1707,
+          "1": 1605,
+          "2": 1604,
+          "3": 1584
+        },
+        "rows": 6500,
+        "topic_end_offsets": {
+          "0": 2337,
+          "1": 2247,
+          "2": 2260,
+          "3": 2156
+        }
+      },
+      "configuration": {
+        "checkpoint_interval": "10s",
+        "checkpointing_mode": "EXACTLY_ONCE",
+        "parallelism": 2,
+        "write_mode": "append"
+      },
+      "events_produced": 12000,
+      "job_id": "3a9c7d23712a75c2e4d3bf7a1a25c123",
+      "landed": {
+        "complete": true,
+        "distinct_npi": 1998,
+        "duplicate_npi_rows": 10002,
+        "duplicate_seq_rows": 0,
+        "events_expected": 12000,
+        "files": {
+          "avg_data_file_bytes": 23478,
+          "data_bytes": 140870,
+          "data_files": 6,
+          "delete_bytes": 0,
+          "delete_files": 0
+        },
+        "missing_seq_runs": [],
+        "rows": 12000
+      },
+      "prediction": "no duplicates",
+      "prediction_held": true,
+      "restart": {
+        "checkpoints_after": {
+          "completed": 2,
+          "failed": 2,
+          "in_progress": 0,
+          "restored": 1
+        },
+        "failure_causes": [
+          "org.apache.flink.runtime.jobmaster.JobMasterException"
+        ],
+        "job_state_after_restart": "RUNNING",
+        "restored_from": {
+          "checkpoint_id": 2,
+          "is_savepoint": false,
+          "path": "file:/flink-state/checkpoints/3a9c7d23712a75c2e4d3bf7a1a25c123/chk-2"
+        }
+      }
+    },
+    {
+      "after": {
+        "committed_checkpoint_id": 4,
+        "group_offsets": {
+          "0": 3098,
+          "1": 3005,
+          "2": 3009,
+          "3": 2888
+        },
+        "topic_end_offsets": {
+          "0": 3098,
+          "1": 3005,
+          "2": 3009,
+          "3": 2888
+        }
+      },
+      "before_kill": {
+        "checkpoints": {
+          "completed": 2,
+          "failed": 0,
+          "in_progress": 0,
+          "restored": 0
+        },
+        "committed_checkpoint_id": 2,
+        "group_offsets": {
+          "0": 1166,
+          "1": 1127,
+          "2": 1115,
+          "3": 1092
+        },
+        "rows": 1787,
+        "topic_end_offsets": {
+          "0": 1707,
+          "1": 1605,
+          "2": 1604,
+          "3": 1584
+        }
+      },
+      "configuration": {
+        "checkpoint_interval": "10s",
+        "checkpointing_mode": "EXACTLY_ONCE",
+        "parallelism": 2,
+        "write_mode": "upsert on npi"
+      },
+      "events_produced": 12000,
+      "job_id": "95d11c3a2140d9cc9fbae7fb2c25d9ba",
+      "landed": {
+        "complete": true,
+        "distinct_npi": 1998,
+        "duplicate_npi_rows": 0,
+        "duplicate_seq_rows": 0,
+        "files": {
+          "avg_data_file_bytes": 22536,
+          "data_bytes": 135219,
+          "data_files": 6,
+          "delete_bytes": 46949,
+          "delete_files": 12
+        },
+        "missing_seq_runs": null,
+        "providers_expected": 1998,
+        "providers_held": 1998,
+        "providers_not_carrying_the_latest_record": 0,
+        "rows": 1998
+      },
+      "prediction": "no duplicates",
+      "prediction_held": true,
+      "restart": {
+        "checkpoints_after": {
+          "completed": 2,
+          "failed": 1,
+          "in_progress": 0,
+          "restored": 1
+        },
+        "failure_causes": [
+          "org.apache.flink.runtime.jobmaster.JobMasterException"
+        ],
+        "job_state_after_restart": "RUNNING",
+        "restored_from": {
+          "checkpoint_id": 2,
+          "is_savepoint": false,
+          "path": "file:/flink-state/checkpoints/95d11c3a2140d9cc9fbae7fb2c25d9ba/chk-2"
+        }
+      }
+    }
+  ],
+  "experiment": "restart_replay",
+  "failure_injected": "docker kill of the TaskManager, mid-feed, once per configuration",
+  "offsets_are_monitoring": {
+    "events_produced": 6000,
+    "first_job": {
+      "committed_offsets": {
+        "0": 1552,
+        "1": 1500,
+        "2": 1490,
+        "3": 1458
+      },
+      "job_id": "ec28398b4adcb7eb64236ba8fbb4c66a",
+      "retained_checkpoint": "file:/flink-state/checkpoints/ec28398b4adcb7eb64236ba8fbb4c66a/chk-2",
+      "rows": 6000
+    },
+    "job_that_trusted_the_offsets": {
+      "duplicate_rows": 6000,
+      "job_id": "5f731b3477f62bf4da23efb542185e92",
+      "rows": 12000,
+      "startup_mode": "group-offsets"
+    },
+    "offsets_rewound_again_to": {
+      "0": 0,
+      "1": 0,
+      "2": 0,
+      "3": 0
+    },
+    "offsets_rewound_to": {
+      "0": 0,
+      "1": 0,
+      "2": 0,
+      "3": 0
+    },
+    "restored_from_checkpoint": {
+      "committed_offsets_afterward": {
+        "0": 1552,
+        "1": 1500,
+        "2": 1490,
+        "3": 1458
+      },
+      "duplicate_rows": 0,
+      "job_id": "9339beaaeba186294364b672a947cec5",
+      "restore_point": "the retained checkpoint, not the offsets",
+      "rows": 6000
+    }
+  },
+  "question": "what does a restart actually replay, and which setting decides it",
+  "workload": {
+    "distinct_npi_expected": 1998,
+    "events": 12000,
+    "partitions": 4,
+    "produced_in_chunks_of": 500,
+    "providers_in_the_feed": 2000,
+    "seconds_between_chunks": 0.4
+  }
+}

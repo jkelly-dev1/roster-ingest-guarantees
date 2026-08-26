@@ -1,0 +1,255 @@
+{
+  "experiment": "savepoint_loss",
+  "frozen_window": {
+    "checkpoints_failed_while_frozen": 1,
+    "job_states_while_frozen": [
+      "RUNNING"
+    ],
+    "min_consumer_lag_while_frozen": 0,
+    "rows_at_the_first_commit_after_the_watermark_cleared": 32000,
+    "rows_committed_in_one_lump": 16000,
+    "rows_while_frozen": [
+      16000
+    ],
+    "samples_while_the_checkpoint_id_was_at_or_below_the_watermark": 9,
+    "seconds_frozen": 58.1,
+    "the_table_never_moved_while_frozen": true
+  },
+  "landed": {
+    "duplicate_rows": 12000,
+    "files": {
+      "avg_data_file_bytes": 15515,
+      "data_bytes": 465469,
+      "data_files": 30,
+      "delete_bytes": 0,
+      "delete_files": 0
+    },
+    "missing_seq_runs": [],
+    "rows": 36000,
+    "rows_expected": 24000,
+    "rows_lost": 0,
+    "settled_at": 36000
+  },
+  "prediction": "restoring from a savepoint older than the table's newest commit LOSES every record read while the restored job's checkpoint ids are at or below flink.max-committed-checkpoint-id, with the job reporting RUNNING throughout",
+  "prediction_held": false,
+  "question": "what does restoring from a savepoint older than the table's newest commit actually do",
+  "restored_job": {
+    "checkpoints": {
+      "completed": 23,
+      "failed": 1,
+      "in_progress": 0,
+      "restored": 1
+    },
+    "checkpoints_below_the_watermark": 14,
+    "failure_causes": [],
+    "final_state": "RUNNING",
+    "first_completed_checkpoint_id": 6,
+    "job_id": "f72516daf81d85234cc99fc2b76a9f5e",
+    "restored_from": {
+      "checkpoint_id": 5,
+      "is_savepoint": true,
+      "path": "file:/flink-state/savepoints/savepoint-bb32e9-791c490d3735"
+    }
+  },
+  "savepoint": {
+    "checkpoint_id": 5,
+    "path": "file:/flink-state/savepoints/savepoint-bb32e9-791c490d3735"
+  },
+  "stages": [
+    {
+      "checkpoints_failed": 0,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 4,
+      "max_committed_checkpoint_id": 1,
+      "rows_visible_to_trino": 4000,
+      "snapshots": 1,
+      "stage": "01_first_batch_landed",
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 0,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 6,
+      "max_committed_checkpoint_id": 1,
+      "rows_visible_to_trino": 4000,
+      "snapshots": 1,
+      "stage": "02_savepoint_taken",
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 0,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 20,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "snapshots": 13,
+      "stage": "03_table_committed_past_the_savepoint",
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "consumer_lag": 0,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "snapshots": 13,
+      "stage": "04_job_stopped",
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "consumer_lag": 4000,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "snapshots": 13,
+      "stage": "05_third_batch_produced_while_down",
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 21,
+      "max_committed_checkpoint_id": 20,
+      "rows_visible_to_trino": 32000,
+      "snapshots": 14,
+      "stage": "06_restored_job_cleared_the_watermark",
+      "writing_job_id_on_newest_snapshot": "f72516daf81d85234cc99fc2b76a9f5e"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 28,
+      "max_committed_checkpoint_id": 22,
+      "rows_visible_to_trino": 36000,
+      "snapshots": 15,
+      "stage": "07_fourth_batch_landed",
+      "writing_job_id_on_newest_snapshot": "f72516daf81d85234cc99fc2b76a9f5e"
+    }
+  ],
+  "timeline_after_restore": [
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 7,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "seconds_since_restore": 0.0,
+      "snapshots": 13,
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 9,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "seconds_since_restore": 7.2,
+      "snapshots": 13,
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 10,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "seconds_since_restore": 14.5,
+      "snapshots": 13,
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 12,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "seconds_since_restore": 21.7,
+      "snapshots": 13,
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 13,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "seconds_since_restore": 29.2,
+      "snapshots": 13,
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 14,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "seconds_since_restore": 36.4,
+      "snapshots": 13,
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 16,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "seconds_since_restore": 43.6,
+      "snapshots": 13,
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 17,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "seconds_since_restore": 50.9,
+      "snapshots": 13,
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 19,
+      "max_committed_checkpoint_id": 19,
+      "rows_visible_to_trino": 16000,
+      "seconds_since_restore": 58.1,
+      "snapshots": 13,
+      "writing_job_id_on_newest_snapshot": "bb32e900f1e9143b508a6f2d89301e76"
+    },
+    {
+      "checkpoints_failed": 1,
+      "consumer_lag": 0,
+      "job_state": "RUNNING",
+      "latest_completed_checkpoint_id": 20,
+      "max_committed_checkpoint_id": 20,
+      "rows_visible_to_trino": 32000,
+      "seconds_since_restore": 65.4,
+      "snapshots": 14,
+      "writing_job_id_on_newest_snapshot": "f72516daf81d85234cc99fc2b76a9f5e"
+    }
+  ],
+  "watermark_before_restore": 19,
+  "workload": {
+    "checkpoint_gap_requested": 12,
+    "checkpoint_interval": "5s",
+    "events_total": 24000,
+    "first_batch": 4000,
+    "fourth_batch": 4000,
+    "parallelism": 2,
+    "partitions": 4,
+    "sustained_batch": 12000,
+    "third_batch": 4000
+  }
+}

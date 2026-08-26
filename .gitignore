@@ -1,0 +1,20 @@
+# WHAT IS DELIBERATELY TRACKED, so that a later edit has to argue with a
+# sentence before it can drop it:
+#
+#   results/*.json   THE EVIDENCE. Every number in README.md is derived from
+#                    these by scripts/check_readme_numbers.py, and the test
+#                    suite asserts against them. A repository that ignored
+#                    them would pass every existence check and be useless.
+#   sql/, scripts/   the experiments and the smoke test
+#   stack/           the compose file and the Flink image definition. The JARs
+#                    are downloaded at build time and never committed: they
+#                    total about 100 MB, and a jar in a git repository is a
+#                    supply-chain artifact nobody reviews.
+#
+# Excluded below is only what a clone can rebuild.
+
+envs
+__pycache__
+.pytest_cache
+*.pyc
+.DS_Store

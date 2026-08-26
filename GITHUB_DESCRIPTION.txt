@@ -1,0 +1,1 @@
+Where a Kafka to Iceberg pipeline stops being exactly-once: Flink 1.20, Iceberg 1.10, Kafka 4.3 and Trino 478 in Docker Compose. Turning off exactly-once checkpointing changed nothing; an old savepoint froze the table for about a minute at zero consumer lag, then committed 12,000 duplicates; checkpoint interval sets file size, not target file size.

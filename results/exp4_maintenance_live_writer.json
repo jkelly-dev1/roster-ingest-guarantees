@@ -1,0 +1,119 @@
+{
+  "experiment": "maintenance_live_writer",
+  "expire_snapshots": {
+    "after_expiry": {
+      "error": null,
+      "job_state": "RUNNING",
+      "snapshots": 1,
+      "table": {
+        "readable": true,
+        "rows": 6000
+      },
+      "watermark": 5
+    },
+    "after_the_restart": {
+      "checkpoints": {
+        "completed": 20,
+        "failed": 3,
+        "in_progress": 0,
+        "restored": 1
+      },
+      "failure_causes": [
+        "org.apache.flink.runtime.jobmaster.JobMasterException"
+      ],
+      "job_state": "RUNNING",
+      "snapshots": 6,
+      "watermark": 17
+    },
+    "before_expiry": {
+      "job_state": "RUNNING",
+      "rows": 6000,
+      "snapshots": 5,
+      "watermark": 5
+    },
+    "events_produced": 12000,
+    "job_id": "9742051d7b010b5edeed1ad0eb2dbf48",
+    "kept_writing_after_expiry": {
+      "job_state": "RUNNING",
+      "rows": 10000,
+      "snapshots": 4
+    },
+    "landed": {
+      "duplicate_rows": 0,
+      "files": {
+        "avg_data_file_bytes": 11324,
+        "data_bytes": 226492,
+        "data_files": 20,
+        "delete_bytes": 0,
+        "delete_files": 0
+      },
+      "missing_seq_runs": [],
+      "rows": 12000,
+      "rows_expected": 12000
+    },
+    "prediction": "expiring snapshots under a live writer is survivable while it runs, and the next restart re-commits its pending state because the watermark it looks for has been deleted",
+    "prediction_held": false,
+    "survived": true,
+    "the_watermark_survived_because_the_newest_snapshot_did": true
+  },
+  "question": "what do expire_snapshots and remove_orphan_files do to a job that is still writing to the table",
+  "remove_orphan_files": {
+    "after": {
+      "checkpoints": {
+        "completed": 3,
+        "failed": 0,
+        "in_progress": 0,
+        "restored": 0
+      },
+      "failure_causes": [],
+      "job_state": "RUNNING",
+      "table": {
+        "readable": true,
+        "rows": 8000
+      }
+    },
+    "checkpoint_interval": "60s",
+    "error": null,
+    "events_produced": 8000,
+    "job_id": "f287d339a9fafa22b3c0e4f322fc5f32",
+    "landed": {
+      "duplicate_rows": 0,
+      "files": {
+        "avg_data_file_bytes": 24142,
+        "data_bytes": 96570,
+        "data_files": 4,
+        "delete_bytes": 0,
+        "delete_files": 0
+      },
+      "missing_seq_runs": [],
+      "rows": 8000,
+      "rows_expected": 8000,
+      "rows_lost": 0
+    },
+    "nothing_was_exposed_to_the_procedure": true,
+    "prediction": "remove_orphan_files with the retention threshold at zero deletes Parquet files the writer has written but not yet committed, and the loss shows up as missing rows",
+    "prediction_held": false,
+    "rows_committed_before": 4000,
+    "rows_in_flight_when_it_ran": 4000,
+    "state_when_the_procedure_ran": {
+      "job_state": "RUNNING",
+      "rows_visible": 4000,
+      "snapshots": 1,
+      "storage": {
+        "data_files_referenced_by_the_snapshot": 2,
+        "data_objects_no_snapshot_references": 0,
+        "data_objects_on_disk": 2,
+        "objects_on_disk": 6,
+        "unreferenced_bytes": 0
+      }
+    },
+    "storage_immediately_after_the_procedure": {
+      "data_files_referenced_by_the_snapshot": 2,
+      "data_objects_no_snapshot_references": 0,
+      "data_objects_on_disk": 2,
+      "objects_on_disk": 6,
+      "unreferenced_bytes": 0
+    },
+    "survived": true
+  }
+}

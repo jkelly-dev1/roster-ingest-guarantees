@@ -1,0 +1,183 @@
+# Kafka, Flink, Iceberg and Trino on one machine. Six services, no cloud
+# account.
+#
+# The credentials below are local-only and deliberate. MinIO needs a root user
+# to start, and the catalog, Flink and Trino need the same pair to reach it.
+# Every port is bound to loopback. They are fixtures, not secrets.
+#
+# Ports are deliberately unusual. Flink's own default of 8081 is one of the
+# most commonly occupied ports on a developer machine, so the web UI is on
+# 8091 here. Nothing in this stack uses a default port.
+#
+# The project name is explicit, and it has to be. Compose derives the project
+# name from the CONTAINING DIRECTORY when you do not set one, and this file
+# lives in a directory called stack/. Two unrelated projects that both keep
+# their compose file in stack/ therefore share one project namespace: bringing
+# this one up treats the other one's containers as orphans, and taking this one
+# down removes them, volumes and all.
+name: roster-ingest-guarantees
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: rig-minio
+    command: server /data --console-address ":9011"
+    environment:
+      MINIO_ROOT_USER: roster-local
+      MINIO_ROOT_PASSWORD: roster-local-secret
+    ports:
+      - "127.0.0.1:9010:9000"
+      - "127.0.0.1:9011:9011"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One shot: create the warehouse bucket, then exit 0.
+  minio-init:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: rig-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 roster-local roster-local-secret &&
+      mc mb --ignore-existing local/warehouse &&
+      echo 'warehouse bucket ready'"
+
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:1.10.0
+    container_name: rig-rest
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: roster-local
+      AWS_SECRET_ACCESS_KEY: roster-local-secret
+      AWS_REGION: us-east-1
+    ports:
+      - "127.0.0.1:8182:8181"
+
+  # Single-node KRaft. No ZooKeeper: it is gone as of Kafka 4.
+  #
+  # One partition is a deliberate default and the experiments override it.
+  # Ordering guarantees in Kafka are per partition, so a roster feed that needs
+  # per-provider ordering has to be keyed and the partition count has to be a
+  # decision rather than an accident.
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: rig-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: rig-single-node-cluster
+    ports:
+      - "127.0.0.1:9092:9092"
+    # A named volume, not a container layer. Every restart experiment in this
+    # repository depends on the Kafka log outliving the broker process. Without
+    # it, the first `docker compose up` after an image change silently wipes
+    # the topic, and a replay experiment then measures nothing: it reads an
+    # empty log and reports a clean run. It presents as a topic that has
+    # simply stopped existing, which points anywhere but at the image build.
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  jobmanager:
+    build: ./flink
+    image: rig-flink:1.20-iceberg1.10.0
+    container_name: rig-flink-jm
+    depends_on:
+      kafka:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_started
+    command: jobmanager
+    ports:
+      - "127.0.0.1:8091:8081"
+    environment:
+      AWS_ACCESS_KEY_ID: roster-local
+      AWS_SECRET_ACCESS_KEY: roster-local-secret
+      AWS_REGION: us-east-1
+      # Checkpoints live on a shared volume, not in a container layer. The
+      # restart experiments kill the TaskManager and expect the job to resume
+      # from its last checkpoint; a checkpoint written inside the container
+      # that died is not a checkpoint.
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        state.backend: rocksdb
+        state.checkpoints.dir: file:///flink-state/checkpoints
+        state.savepoints.dir: file:///flink-state/savepoints
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.mode: EXACTLY_ONCE
+        execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+        restart-strategy: fixed-delay
+        restart-strategy.fixed-delay.attempts: 10
+        restart-strategy.fixed-delay.delay: 3s
+        taskmanager.numberOfTaskSlots: 4
+    volumes:
+      - flink-state:/flink-state
+
+  taskmanager:
+    build: ./flink
+    image: rig-flink:1.20-iceberg1.10.0
+    container_name: rig-flink-tm
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    environment:
+      AWS_ACCESS_KEY_ID: roster-local
+      AWS_SECRET_ACCESS_KEY: roster-local-secret
+      AWS_REGION: us-east-1
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        state.backend: rocksdb
+        state.checkpoints.dir: file:///flink-state/checkpoints
+        state.savepoints.dir: file:///flink-state/savepoints
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 2048m
+    volumes:
+      - flink-state:/flink-state
+
+  # Trino is here to VERIFY what Flink wrote, not to write anything. Reading
+  # the table back with a second engine is the only way to show that the
+  # commit is a real Iceberg commit and not something only Flink can parse.
+  trino:
+    image: trinodb/trino:478
+    container_name: rig-trino
+    depends_on:
+      - iceberg-rest
+    ports:
+      - "127.0.0.1:8092:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+
+volumes:
+  flink-state:
+  kafka-data:
+  minio-data:
