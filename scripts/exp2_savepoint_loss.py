@@ -14,7 +14,7 @@ does NOTHING AT ALL; it does not commit and it does not discard. The files
 stay in the committer's state. The first checkpoint that clears the watermark
 commits the whole accumulation in one lump.
 
-So the hazard is not loss. It is these two, and both are measured here:
+The hazard is therefore not loss. It is these two, and both are measured here:
 
   The table freezes while everything says it is healthy. For as long as the
   restored job's checkpoint counter is climbing back to the watermark, the
@@ -46,11 +46,15 @@ CHUNK = 1000
 PAUSE = 4.0
 PROVIDERS = 2000
 INTERVAL = "5s"
+# One name for the writer count, used where the job is started and where the
+# results file records what the run used, so the evidence cannot name a
+# parallelism no job ran at.
+PARALLELISM = 2
 
 # The gap between the savepoint and the table's newest commit is what decides
 # how long the restored job runs before it can commit anything. It is made
-# WIDE ON PURPOSE: a one or two checkpoint gap closes before the replayed
-# records are even read, and then nothing is observable at all.
+# wide: a one or two checkpoint gap closes before the replayed records are
+# even read, and then nothing is observable at all.
 CHECKPOINT_GAP = 12
 
 PREDICTION = ("restoring from a savepoint older than the table's newest "
@@ -122,7 +126,7 @@ def main():
 
     lab.produce(BATCH, TOPIC, start=1, providers=PROVIDERS)
     job_a = lab.submit(jobs.ingest("e2-original", TOPIC, GROUP, TABLE,
-                                   interval=INTERVAL, parallelism=2),
+                                   interval=INTERVAL, parallelism=PARALLELISM),
                        "e2_original")
     lab.wait_for_rows(TABLE, BATCH, timeout=300)
     lab.wait_for_checkpoints(job_a, 3, timeout=240)
@@ -156,7 +160,7 @@ def main():
     stages.append(stage("05_third_batch_produced_while_down"))
 
     job_b = lab.submit(jobs.ingest("e2-restored", TOPIC, GROUP, TABLE,
-                                   interval=INTERVAL, parallelism=2,
+                                   interval=INTERVAL, parallelism=PARALLELISM,
                                    savepoint_path=savepoint_path),
                        "e2_restored")
     lab.wait_for_checkpoints(job_b, 1, timeout=240)
@@ -219,7 +223,7 @@ def main():
         "workload": {"first_batch": BATCH, "sustained_batch": SUSTAINED,
                      "third_batch": BATCH, "fourth_batch": BATCH,
                      "events_total": total, "partitions": 4,
-                     "checkpoint_interval": INTERVAL, "parallelism": 2,
+                     "checkpoint_interval": INTERVAL, "parallelism": PARALLELISM,
                      "checkpoint_gap_requested": CHECKPOINT_GAP},
         "savepoint": {"path": savepoint_path, "checkpoint_id": savepoint_id},
         "watermark_before_restore": watermark,

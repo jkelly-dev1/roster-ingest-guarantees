@@ -77,7 +77,7 @@ at about 0.95, which cannot separate "impossible" from "usually does not
 happen". Kill timing, kill target, parallelism, checkpoint interval and
 partition count were never varied.
 
-And the setting is not verified as in force. The only evidence that
+The setting is also not verified as in force. The only evidence that
 `AT_LEAST_ONCE` actually applied is the SQL string sent to the job and the
 results echoing the value that was REQUESTED. Experiment 5 does this properly;
 it asks the broker what timeout it registered, precisely because "a setting that
@@ -362,18 +362,36 @@ Kafka or Flink.
 | Duplicates count extra rows, not values that repeat | `tests/test_measurement_logic.py::TestDuplicateCounting::test_counts_extra_rows_not_repeated_values` |
 | Missing rows are reported as runs, not as a count | `tests/test_measurement_logic.py::TestMissingRange::test_reports_runs_and_not_a_count` (mutation-checked: return the count and the shape of a loss disappears) |
 | A gap that runs to the end of the feed is still closed | `tests/test_measurement_logic.py::TestMissingRange::test_a_gap_that_runs_to_the_end_is_still_closed` |
-| A real error survives output cleaning | `tests/test_measurement_logic.py::TestOutputCleaning::test_a_real_error_survives_cleaning` (mutation-checked: discard stderr wholesale and a failed statement looks like an empty result) |
+| A real error survives output cleaning | `tests/test_measurement_logic.py::TestOutputCleaning::test_a_real_error_survives_cleaning` (mutation-checked: widen the noise filter to anything that also matches a Trino error and it fails) |
+| A failed statement is an error, not an empty result | `tests/test_measurement_logic.py::TestOutputCleaning::test_a_failed_statement_raises_with_its_error_text` (mutation-checked: discard stderr wholesale, or drop the return-code check, and a failed statement looks like an empty result) |
 | Upsert needs the primary key and the flag together | `tests/test_measurement_logic.py::TestJobSql::test_upsert_needs_the_key_and_the_flag_together` (mutation-checked: drop either one and it fails) |
 | Restart attempts are raised, so a kill does not end the job | `tests/test_measurement_logic.py::TestJobSql::test_restart_attempts_are_raised_so_a_kill_does_not_end_the_job` |
 | The same seed gives the same bytes | `tests/test_measurement_logic.py::TestGenerator::test_the_same_seed_gives_the_same_bytes` |
 | Providers recur, which is what makes upsert a real alternative | `tests/test_measurement_logic.py::TestGenerator::test_providers_recur_which_is_what_makes_upsert_a_real_choice` |
 | The expected table is computed from the seed, not from the run | `tests/test_measurement_logic.py::TestExpectedState::test_the_expected_table_is_computed_from_the_seed_not_the_run` |
-| Every number in this README is derived from `results/*.json` | `scripts/check_readme_numbers.py`, run in CI (mutation-checked: change one figure in the README and it fails) |
+| A predicted duplicate is the prediction holding, not failing | `tests/test_measurement_logic.py::TestTheVerdictsAreComputed::test_a_predicted_duplicate_is_the_prediction_holding` (mutation-checked: judge every configuration by whether it is duplicate-free and it fails) |
+| The duplicate measure follows the write mode | `tests/test_measurement_logic.py::TestTheVerdictsAreComputed::test_the_duplicate_measure_follows_the_write_mode` (mutation-checked: read the other column and a correct table is called broken) |
+| The target-size comparison can come out either way | `tests/test_measurement_logic.py::TestTheVerdictsAreComputed::test_the_control_comparison_can_come_out_either_way` (mutation-checked: hard-code the flag and the refuted prediction quietly holds) |
+| A quiet window shorter than the commit interval is refused | `tests/test_measurement_logic.py::TestTheVerdictsAreComputed::test_a_quiet_window_shorter_than_the_commit_interval_is_refused` (mutation-checked: remove the refusal and it polls the table instead) |
+| The producer reports what the broker took, not what it generated | `tests/test_measurement_logic.py::TestProduceScript::test_records_that_never_landed_are_a_failure` (mutation-checked: drop the end-offset comparison and a feed that half landed reports success) |
+| A generator that failed is not a feed of zero events | `tests/test_measurement_logic.py::TestProduceScript::test_a_generator_that_failed_is_not_a_feed_of_zero_events` (mutation-checked: drop `set -e` from produce.sh and it prints "produced 0 events" and exits 0) |
+| The repository description's duplicate count is the measured one | `tests/test_results_invariants.py::TestTheRepositoryDescriptionIsAlsoDerived::test_the_duplicate_count_is_the_one_the_run_recorded` (mutation-checked: change the figure in GITHUB_DESCRIPTION.txt and it fails) |
+| The description names the engine versions the stack runs | `tests/test_results_invariants.py::TestTheRepositoryDescriptionIsAlsoDerived::test_the_engine_versions_are_the_ones_the_stack_runs` (mutation-checked: bump an image in compose.yaml and it fails) |
+| The Flink base image is pinned by patch and digest, and the patch is the one this README names | `tests/test_results_invariants.py::TestTheRepositoryDescriptionIsAlsoDerived::test_the_flink_base_image_is_pinned_by_patch_and_digest` (mutation-checked: go back to the moving `flink:1.20` tag and it fails) |
+| The recorded writer count is the one the code starts its job with | `tests/test_results_invariants.py::TestTheEvidenceMatchesTheCodeThatMadeIt::test_the_recorded_writer_count_is_the_one_the_code_starts` (mutation-checked: change `PARALLELISM` and the shipped evidence stops matching) |
+| The landed table is judged complete only when it is | `tests/test_results_invariants.py::TestTheExactlyOnceVerdictIsComputed::test_measure_rebuilds_each_landed_block` (every shipped block is complete, so the falsifiers in the next two rows are what a hard-coded verdict fails) |
+| A duplicate row, or a gap, is not a complete append table | `tests/test_results_invariants.py::TestTheExactlyOnceVerdictIsComputed::test_a_duplicate_row_is_not_a_complete_append_table` and `tests/test_results_invariants.py::TestTheExactlyOnceVerdictIsComputed::test_a_gap_is_not_a_complete_append_table` (mutation-checked: hard-code the verdict and they fail) |
+| A missing provider, or a stale revision, is not a complete upsert table | `tests/test_results_invariants.py::TestTheExactlyOnceVerdictIsComputed::test_a_stale_revision_is_not_a_complete_upsert_table` (the table is the right SIZE and still wrong, which is why a row count cannot be the measure) |
+| The shipped transaction-timeout runs replay through the code that recorded them | `tests/test_results_invariants.py::TestTheShippedRunsReplayThroughTheCode::test_exp5_run_one_rebuilds_the_run_it_recorded` (mutation-checked: neutralize `run_one` and it fails) |
+| The shipped commit-interval runs replay through the code that recorded them | `tests/test_results_invariants.py::TestTheCommitIntervalRunsReplay::test_run_one_rebuilds_the_run_it_recorded` (mutation-checked: neutralize `run_one` and it fails) |
+| Every number in this README is derived from `results/*.json` | `scripts/check_readme_numbers.py`, run in CI, and `tests/test_results_invariants.py::TestTheReadmeCheckerStillChecks::test_the_shipped_readme_passes_the_comparison` (mutation-checked: change one figure in the README and it fails) |
 
 ## Running it
 
-The tests need nothing but pytest. Reproducing the measurements needs Docker
-and about 6 GB of free memory.
+The tests need pytest and a POSIX shell. Three of them drive
+`scripts/produce.sh` against a stand-in broker, which is a shell script and a
+`docker` that answers on a PATH of the test's own making, not Docker.
+Reproducing the measurements needs Docker and about 6 GB of free memory.
 
 ```
 python3 -m venv envs && ./envs/bin/pip install "pytest>=8,<10"
@@ -396,7 +414,7 @@ Then, from the repository root, the end-to-end smoke test:
 ./scripts/q.sh "SELECT count(*) FROM iceberg.roster.providers_append"
 ```
 
-And the experiments, each of which creates and drops its own topics and
+Then the experiments, each of which creates and drops its own topics and
 tables:
 
 ```
@@ -447,9 +465,10 @@ reader building the same stack loses time to them in the same way.
 - **One machine, one broker, four partitions.** Nothing here says what happens
   across a real cluster. Every timing and freshness figure carries that
   caveat, and none of them is a benchmark.
-- **One version of each engine.** Flink 1.20 (the image is `flink:1.20`, a
-  moving tag. The exact patch was not captured), Iceberg 1.10.0, Kafka 4.3.1,
-  Trino 478. Section 2's result in particular is a fact about how Iceberg 1.10's
+- **One version of each engine.** Flink 1.20.5, Iceberg 1.10.0, Kafka 4.3.1,
+  Trino 478. The Dockerfile pins `flink:1.20.5` by digest; the image the
+  recorded runs used carried JDK 11.0.31, and the pinned rebuild of that tag
+  carries 11.0.32. Section 2's result in particular is a fact about how Iceberg 1.10's
   committer treats a checkpoint at or below the watermark, and another minor
   version could behave differently.
 - **Not a throughput benchmark.** The measurements are about CORRECTNESS UNDER
@@ -475,7 +494,7 @@ is the one to read directly against this repository, and the two were built to
 be read that way. It measures what Iceberg table changes cost on a static
 20,000,000 row table with Trino: which changes are metadata-only, what
 partition evolution costs every query afterward, and that `expire_snapshots`
-reclaims exactly zero bytes while `remove_orphan_files` is what frees the
+reclaims exactly zero data bytes while `remove_orphan_files` is what frees the
 space. That last pair is the fact section 4 here puts a live writer next to.
 
 [roster-entity-resolution](https://github.com/jkelly-dev1/roster-entity-resolution)

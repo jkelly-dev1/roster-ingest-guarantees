@@ -1,9 +1,9 @@
 """Deterministic provider-roster events. No corpus is shipped.
 
 Every field is a pure function of the record number and a fixed salt, so a
-clone reproduces the exact same stream without downloading anything. The same
-An experiment whose input cannot be regenerated cannot be re-run by anybody
-else, and a corpus in a git repository is a thing nobody reviews.
+clone reproduces the exact same stream without downloading anything. An
+experiment whose input cannot be regenerated cannot be re-run by anybody else,
+and a corpus in a git repository is a thing nobody reviews.
 
 The stream is a ROSTER FEED, not random rows. That matters for the
 experiments:

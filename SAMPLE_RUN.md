@@ -2,8 +2,8 @@
 
 Captured output, not retyped. Every command below was executed exactly as it
 appears here and in the README, on 2026-08-21, on one Linux machine with Docker
-Compose: Flink 1.20.5, Iceberg 1.10.0, Kafka 4.3.1, Trino 478, MinIO, all bound
-to loopback. No cloud account and no paid API was involved in any of it.
+Compose: Flink 1.20.5, Iceberg 1.10.0, Kafka 4.3.1, Trino 478, MinIO, all bound to
+loopback. No cloud account and no paid API was involved in any of it.
 
 What was altered: nothing. Two things need saying anyway, because both would
 otherwise look like editing.
@@ -25,11 +25,18 @@ below, so this is a capture of a cold start and not of a warm one.
 Nothing here needs Docker. It reads the shipped `results/*.json` and the pure
 measurement functions.
 
+This test-suite block was captured on 2026-09-23. The suite pins every
+function in all five experiment scripts by replaying the runs they recorded:
+each one is driven by a stand-in `lab` answering out of results/*.json and has
+to rebuild the block it produced. Everything below this is the 2026-08-21
+capture, because re-running it needs the stack.
+
 ```
 $ ./envs/bin/pytest -q
-........................................................................ [ 73%]
-..........................                                               [100%]
-102 passed in 0.20s
+........................................................................ [ 47%]
+........................................................................ [ 95%]
+.......                                                                  [100%]
+151 passed in 0.82s
 
 $ python3 scripts/check_readme_numbers.py
 

@@ -21,8 +21,11 @@ three kinds of thing about it:
 
 import json
 import os
+import re
 
 import pytest
+
+import lab
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -228,7 +231,7 @@ class TestSavepointRestore:
         assert max(frozen) - min(frozen) == 0
 
     def test_the_consumer_lag_reached_zero_while_the_table_was_stale(self, exp2):
-        # MUTATION CHECK ANCHOR, and the operational point of the whole
+        # Mutation check anchor, and the operational point of the whole
         # experiment. The records really were consumed, so the number an
         # on-call dashboard watches goes green while the table is thousands of
         # rows behind. Raise the minimum lag above zero and it fails.
@@ -257,7 +260,7 @@ class TestSavepointRestore:
 
     def test_the_job_never_reported_anything_wrong(self, exp2):
         # No exception and no state change. The absolute count of failed
-        # checkpoints is deliberately NOT asserted here: it is zero or one
+        # checkpoints is left unasserted here: it is zero or one
         # depending on whether the restore itself produced a transient, and
         # pinning it would fail for a reason that has nothing to do with the
         # finding. What the freeze is about is checked one test above.
@@ -398,8 +401,8 @@ class TestMaintenanceAgainstALiveWriter:
         assert a["before_expiry"]["snapshots"] > a["after_expiry"]["snapshots"]
 
     def test_the_watermark_survived_the_expiry(self, exp4):
-        # MUTATION CHECK ANCHOR, and the reason part A came out safe.
-        # expire_snapshots keeps the CURRENT snapshot by definition, and the
+        # Mutation check anchor, and the reason part A came out safe.
+        # expire_snapshots keeps the current snapshot by definition, and the
         # current snapshot is the one carrying flink.max-committed-checkpoint-
         # id. The value a restart needs cannot be expired away.
         a = exp4["expire_snapshots"]
@@ -463,10 +466,9 @@ class TestTransactionTimeout:
         assert long_["timeout_is_below_the_interval"] is False
 
     def test_the_broker_really_registered_the_short_timeout(self, exp5):
-        # THE GUARD, and the one this experiment needed most. The first
-        # version of it found no loss at a six-to-one margin, and there was no
-        # way to tell a rule that does not bite from a setting that never
-        # reached the producer. Now the coordinator is asked directly.
+        # The guard, and the one this experiment needs most. Without it there
+        # is no way to tell a rule that does not bite from a setting that never
+        # reached the producer, so the coordinator is asked directly.
         short = exp5["runs"]["timeout_below_interval"]
         assert short["broker_registered_the_requested_timeout"] == [5000]
         assert exp5["findings"]["the_broker_registered_the_five_second_timeout"]
@@ -523,17 +525,1119 @@ class TestEveryExperimentRecordedItsPrediction:
         assert "prediction_held" in blob
 
 
+class _ReplayLab:
+    """A stand-in `lab` that answers only what it was given.
+
+    `__getattr__` raising is the whole design. A mock that invents a return
+    value for any call would let these replays pass while the function under
+    test did something entirely different, with the fake agreeing with
+    itself. Every method the code reaches for has to be supplied by name,
+    and anything else fails loudly and says which call it was.
+
+    An answer is a plain value, a callable, or a `_Seq([...])` served one per
+    call in order, so a before-and-after pair is written as a pair.
+
+    The sequence is an explicit wrapper, not "a list means several answers":
+    `lab.snapshots()` returns a list, so the type alone cannot say whether a
+    list is the answer or a queue of them, and a fake that guesses hands the
+    code the first snapshot where it wanted the snapshot list. Dispatching on
+    type to infer intent is the same mistake in miniature as a fake that
+    invents return values.
+
+    `duplicates`, `missing_range` and `table` are delegated to the real module:
+    they are pure arithmetic and string-building, they are part of what these
+    replays are checking, and faking them would hollow the test out.
+    """
+
+    _REAL = ("duplicates", "missing_range", "table")
+
+    class Seq:
+        """Several answers for one method, served in call order."""
+
+        def __init__(self, values):
+            self.values = list(values)
+
+    def __init__(self, **answers):
+        self._answers = answers
+        self._used = {}
+        self.calls = []
+        self.LabError = lab.LabError
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if name in self._REAL:
+            return getattr(lab, name)
+        if name not in self._answers:
+            raise AssertionError(
+                f"the code called lab.{name}(), which this replay was not "
+                f"given an answer for. Add it, or the test is exercising "
+                f"something other than what it claims.")
+
+        def answer(*args, **kwargs):
+            self.calls.append(name)
+            value = self._answers[name]
+            if isinstance(value, _ReplayLab.Seq):
+                i = self._used.get(name, 0)
+                assert i < len(value.values), (
+                    f"lab.{name}() was called {i + 1} times and this replay "
+                    f"has {len(value.values)} answer(s) for it")
+                self._used[name] = i + 1
+                return value.values[i]
+            if callable(value):
+                return value(*args, **kwargs)
+            return value
+        return answer
+
+    def unused(self):
+        """Answers that were supplied and never reached. A replay that does
+        not exercise what it set up is describing a run that did not happen."""
+        return sorted(k for k, v in self._answers.items()
+                      if isinstance(v, _ReplayLab.Seq)
+                      and self._used.get(k, 0) < len(v.values))
+
+
+def _offsets_with_lag(lag):
+    """(committed, end) whose difference is exactly `lag`, as sample() sums it."""
+    committed, end = {0: 0}, {0: lag}
+    assert sum(end.get(p, 0) - o for p, o in committed.items()) == lag
+    return committed, end
+
+
+def _snapshots_for(record):
+    """Snapshots whose count and newest summary derive back to `record`."""
+    n = record["snapshots"]
+    if not n:
+        return []
+    snaps = [{"summary": {"flink.max-committed-checkpoint-id": "0"}}
+             for _ in range(n - 1)]
+    snaps.append({"summary": {
+        "flink.max-committed-checkpoint-id":
+            str(record["max_committed_checkpoint_id"]),
+        "flink.job-id": record["writing_job_id_on_newest_snapshot"]}})
+    assert len(snaps) == n
+    return snaps
+
+
+def _lab_for_sample(record, extra=None):
+    committed, end = _offsets_with_lag(record["consumer_lag"])
+    answers = dict(
+        snapshots=_snapshots_for(record),
+        table_exists=True,
+        rows_in=record["rows_visible_to_trino"],
+        group_offsets=committed,
+        end_offsets=end,
+        job_state=record.get("job_state"),
+        latest_checkpoint_id=record.get("latest_completed_checkpoint_id"),
+        checkpoint_counts={"failed": record.get("checkpoints_failed", 0)},
+        say=None,
+    )
+    answers.update(extra or {})
+    return _ReplayLab(**answers)
+
+
+def _table_state_for(landed, exp, upsert):
+    """(seqs, held) that `measure` derives the recorded `landed` block from.
+
+    Like every other reconstruction here, this is checked: if it stops
+    reproducing the record the test must die at this line rather than exercise
+    a table the run never had.
+    """
+    if upsert:
+        held = dict(list(exp["latest_seq"].items())[:landed["providers_held"]])
+        seqs = sorted(held.values())
+        assert len(held) == landed["providers_held"]
+        return seqs, held
+    missing = {i for run in (landed["missing_seq_runs"] or [])
+               for i in range(run[0], run[1] + 1)}
+    events = landed["events_expected"]
+    seqs = [s for s in range(1, events + 1) if s not in missing]
+    seqs = seqs[:landed["rows"] - landed["duplicate_seq_rows"]]
+    seqs += seqs[:landed["duplicate_seq_rows"]]
+    assert len(seqs) == landed["rows"]
+    assert lab.duplicates(seqs) == landed["duplicate_seq_rows"]
+    assert lab.missing_range(seqs, 1, events) == [
+        tuple(r) for r in (landed["missing_seq_runs"] or [])]
+    return seqs, {}
+
+
+class _JobsStub:
+    """`jobs` builds SQL and is tested on its own terms in TestJobSql. Here it
+    only has to hand back something a submit can take, and record that it was
+    asked, so a replay cannot pass with the job never built."""
+
+    def __init__(self):
+        self.built = []
+
+    def ingest(self, name, *args, **kwargs):
+        self.built.append((name, kwargs))
+        return f"-- SQL for {name}"
+
+    def kafka_to_kafka(self, name, *args, **kwargs):
+        self.built.append((name, kwargs))
+        return f"-- SQL for {name}"
+
+
+def _seqs_with(rows, duplicate_rows):
+    """A seq list of `rows` entries carrying exactly `duplicate_rows` copies."""
+    base = list(range(1, rows - duplicate_rows + 1))
+    seqs = base + base[:duplicate_rows]
+    assert len(seqs) == rows
+    assert lab.duplicates(seqs) == duplicate_rows
+    return seqs
+
+
+def _seqs_for_landed_block(landed):
+    """Seqs deriving back to a landed block's rows / duplicates / gaps."""
+    total = landed["rows_expected"]
+    missing = {i for run in (landed["missing_seq_runs"] or [])
+               for i in range(run[0], run[1] + 1)}
+    present = [s for s in range(1, total + 1) if s not in missing]
+    present = present[:landed["rows"] - landed["duplicate_rows"]]
+    seqs = present + present[:landed["duplicate_rows"]]
+    assert len(seqs) == landed["rows"]
+    assert lab.duplicates(seqs) == landed["duplicate_rows"]
+    assert lab.missing_range(seqs, 1, total) == [
+        tuple(r) for r in (landed["missing_seq_runs"] or [])]
+    if "rows_lost" in landed:
+        assert total - len(set(seqs)) == landed["rows_lost"]
+    return seqs
+
+
+class TestTheMaintenanceRunsReplay:
+    """exp4's two parts, each rebuilt from the block it recorded.
+
+    These are the runs where a maintenance procedure is pointed at a table a
+    Flink job is actively writing. Both results are negative, since the
+    writer survived, and a negative result is the easiest kind to fake by
+    accident, so the block carries `nothing_was_exposed_to_the_procedure` and
+    the storage counts behind it.
+    Part B's prediction is recorded as refuted and has to stay that way.
+    """
+
+    def test_part_a_rebuilds_the_expire_snapshots_run(self, monkeypatch):
+        import exp4_maintenance_live_writer as exp4
+
+        record = load("exp4_maintenance_live_writer.json")["expire_snapshots"]
+        before, after_x = record["before_expiry"], record["after_expiry"]
+        writing, after_r = record["kept_writing_after_expiry"], record["after_the_restart"]
+        landed = record["landed"]
+        seqs = _seqs_for_landed_block(landed)
+
+        Seq = _ReplayLab.Seq
+        fake = _ReplayLab(
+            say=None, drop_table=None, create_topic=None, produce=0,
+            submit=record["job_id"], wait_for_state="RUNNING",
+            wait_for_rows=None,
+            snapshots=Seq([[None] * before["snapshots"],
+                           [None] * after_x["snapshots"],
+                           [None] * writing["snapshots"],
+                           [None] * after_r["snapshots"]]),
+            rows_in=Seq([before["rows"], after_x["table"]["rows"],
+                         writing["rows"]]),
+            committed_checkpoint_id=Seq([before["watermark"],
+                                         after_x["watermark"],
+                                         after_r["watermark"]]),
+            job_state=Seq([before["job_state"], after_x["job_state"],
+                           writing["job_state"], after_r["job_state"],
+                           after_r["job_state"]]),
+            trino_session="ok",
+            checkpoint_counts=Seq([{"restored": 0}, after_r["checkpoints"]]),
+            kill_taskmanager=None, wait_for_taskmanager=None,
+            wait_for_restore=None,
+            failure_causes=after_r["failure_causes"],
+            wait_until_stable=(landed["rows"], 40.0),
+            seqs_in=seqs, files_in=landed["files"],
+            cancel=None, delete_topic=None)
+        monkeypatch.setattr(exp4, "lab", fake)
+        monkeypatch.setattr(exp4, "jobs", _JobsStub())
+
+        rebuilt = exp4.part_a()
+
+        assert set(rebuilt) == set(record), sorted(set(rebuilt) ^ set(record))
+        for field in sorted(record):
+            want = record[field]
+            if field == "landed" and want.get("missing_seq_runs"):
+                want = dict(want, missing_seq_runs=[tuple(r) for r in
+                                                    want["missing_seq_runs"]])
+            assert rebuilt[field] == want, f"{field}: {rebuilt[field]!r} != {want!r}"
+        assert fake.unused() == [], fake.unused()
+        # The exposure is the restart, not the expiry: part A's whole point.
+        assert "kill_taskmanager" in fake.calls
+
+    def test_part_b_rebuilds_the_remove_orphan_files_run(self, monkeypatch):
+        import exp4_maintenance_live_writer as exp4
+
+        record = load("exp4_maintenance_live_writer.json")["remove_orphan_files"]
+        at_run, after = record["state_when_the_procedure_ran"], record["after"]
+        landed = record["landed"]
+        seqs = _seqs_for_landed_block(landed)
+
+        Seq = _ReplayLab.Seq
+        fake = _ReplayLab(
+            say=None, drop_table=None, create_topic=None, produce=0,
+            submit=record["job_id"], wait_for_state="RUNNING",
+            wait_for_rows=None,
+            rows_in=Seq([record["rows_committed_before"],
+                         at_run["rows_visible"],
+                         after["table"]["rows"]]),
+            snapshots=[None] * at_run["snapshots"],
+            job_state=Seq([at_run["job_state"], after["job_state"]]),
+            storage_vs_catalog=Seq([at_run["storage"],
+                                    record["storage_immediately_after_the_procedure"]]),
+            trino_session="ok",
+            wait_until_stable=(landed["rows"], 90.0),
+            seqs_in=seqs, files_in=landed["files"],
+            checkpoint_counts=after["checkpoints"],
+            failure_causes=after["failure_causes"],
+            cancel=None, delete_topic=None)
+        monkeypatch.setattr(exp4, "lab", fake)
+        monkeypatch.setattr(exp4, "jobs", _JobsStub())
+        monkeypatch.setattr(exp4.time, "sleep", lambda s: None)
+
+        rebuilt = exp4.part_b()
+
+        assert set(rebuilt) == set(record), sorted(set(rebuilt) ^ set(record))
+        for field in sorted(record):
+            want = record[field]
+            if field == "landed" and want.get("missing_seq_runs"):
+                want = dict(want, missing_seq_runs=[tuple(r) for r in
+                                                    want["missing_seq_runs"]])
+            assert rebuilt[field] == want, f"{field}: {rebuilt[field]!r} != {want!r}"
+        assert fake.unused() == [], fake.unused()
+        # The refuted prediction stays refuted.
+        assert rebuilt["prediction_held"] is False
+        assert rebuilt["nothing_was_exposed_to_the_procedure"] is True
+
+
+class TestTheOffsetsAreMonitoringRunReplays:
+    """exp1::part_b, the part that shows committed offsets are not the
+    recovery mechanism.
+
+    It runs three jobs: one that lands the feed, one restored from the
+    retained checkpoint after the offsets are rewound to zero, and one that
+    trusts those offsets. The finding is the contrast between the last two,
+    0 duplicates against 6,000, and it lives entirely in the block this
+    function returns.
+    """
+
+    def test_part_b_rebuilds_the_offsets_block(self, monkeypatch):
+        import exp1_restart_replay as exp1
+
+        record = load("exp1_restart_replay.json")["offsets_are_monitoring"]
+        first, restored = record["first_job"], record["restored_from_checkpoint"]
+        trusting = record["job_that_trusted_the_offsets"]
+
+        Seq = _ReplayLab.Seq
+        fake = _ReplayLab(
+            say=None, drop_table=None, create_topic=None, produce=0,
+            submit=Seq([first["job_id"], restored["job_id"],
+                        trusting["job_id"]]),
+            wait_for_rows=None,
+            wait_for_checkpoints=None,
+            latest_retained_checkpoint=first["retained_checkpoint"],
+            cancel=None,
+            rows_in=first["rows"],
+            group_offsets=Seq([first["committed_offsets"],
+                               restored["committed_offsets_afterward"]]),
+            reset_group_offsets=Seq([record["offsets_rewound_to"],
+                                     record["offsets_rewound_again_to"]]),
+            wait_until_stable=Seq([(restored["rows"], 30.0),
+                                   (trusting["rows"], 30.0)]),
+            seqs_in=Seq([_seqs_with(restored["rows"],
+                                    restored["duplicate_rows"]),
+                         _seqs_with(trusting["rows"],
+                                    trusting["duplicate_rows"])]),
+            delete_topic=None)
+        monkeypatch.setattr(exp1, "lab", fake)
+        monkeypatch.setattr(exp1, "jobs", _JobsStub())
+
+        rebuilt = exp1.part_b()
+
+        assert rebuilt == record, (
+            f"differs at: "
+            f"{[k for k in record if rebuilt.get(k) != record[k]]}")
+        assert fake.unused() == [], fake.unused()
+        # The rewind is the experiment, twice: once behind a job that restores
+        # from its checkpoint and once in front of a job that trusts them.
+        assert fake.calls.count("reset_group_offsets") == 2
+        assert fake.calls.count("submit") == 3
+
+    def test_the_offsets_are_read_before_the_job_is_canceled(self,
+                                                              monkeypatch):
+        """The ordering the code has a comment about, made mechanical.
+
+        A canceled job's consumer group has no members, and
+        kafka-consumer-groups then prints a block the parser reads as no
+        offsets at all, indistinguishable from the offsets having been wiped,
+        which is the very thing this experiment is measuring. The read
+        therefore has to come first.
+        """
+        import exp1_restart_replay as exp1
+
+        record = load("exp1_restart_replay.json")["offsets_are_monitoring"]
+        first, restored = record["first_job"], record["restored_from_checkpoint"]
+        trusting = record["job_that_trusted_the_offsets"]
+        Seq = _ReplayLab.Seq
+        fake = _ReplayLab(
+            say=None, drop_table=None, create_topic=None, produce=0,
+            submit=Seq([first["job_id"], restored["job_id"], trusting["job_id"]]),
+            wait_for_rows=None, wait_for_checkpoints=None,
+            latest_retained_checkpoint=first["retained_checkpoint"],
+            cancel=None, rows_in=first["rows"],
+            group_offsets=Seq([first["committed_offsets"],
+                               restored["committed_offsets_afterward"]]),
+            reset_group_offsets=Seq([record["offsets_rewound_to"],
+                                     record["offsets_rewound_again_to"]]),
+            wait_until_stable=Seq([(restored["rows"], 30.0),
+                                   (trusting["rows"], 30.0)]),
+            seqs_in=Seq([_seqs_with(restored["rows"], restored["duplicate_rows"]),
+                         _seqs_with(trusting["rows"], trusting["duplicate_rows"])]),
+            delete_topic=None)
+        monkeypatch.setattr(exp1, "lab", fake)
+        monkeypatch.setattr(exp1, "jobs", _JobsStub())
+        exp1.part_b()
+
+        order = [c for c in fake.calls if c in ("group_offsets", "cancel")]
+        # first job: cancel, then read. restored job: read, then cancel.
+        assert order == ["cancel", "group_offsets", "group_offsets", "cancel",
+                         "cancel"], order
+
+
+class TestTheRestartRunsReplay:
+    """exp1::run_config rebuilt each of the four configurations it recorded.
+
+    This is the longest orchestrator in the repository: it feeds a topic on
+    a thread, waits for two checkpoints, kills a TaskManager, waits for the
+    restore, waits for the table to settle, and only then measures. Every one
+    of those steps is a lab call, and the block it returns is
+    `configurations[i]` of the shipped results.
+    """
+
+    @pytest.mark.parametrize("index", [0, 1, 2, 3])
+    def test_run_config_rebuilds_each_configuration(self, index, monkeypatch):
+        import exp1_restart_replay as exp1
+
+        shipped = load("exp1_restart_replay.json")
+        record = shipped["configurations"][index]
+        landed, before, restart, after = (record["landed"],
+                                          record["before_kill"],
+                                          record["restart"], record["after"])
+        cfg = next(c for c in exp1.CONFIGS
+                   if ("upsert on npi" if c["upsert"] else "append")
+                   == record["configuration"]["write_mode"]
+                   and c["mode"] == record["configuration"]["checkpointing_mode"])
+        exp = exp1.expected_state(shipped["workload"]["events"],
+                                  shipped["workload"]["providers_in_the_feed"])
+        seqs, held = _table_state_for(landed, exp, cfg["upsert"])
+
+        Seq = _ReplayLab.Seq
+        fake = _ReplayLab(
+            say=None, drop_table=None, create_topic=None, produce=0,
+            submit=record["job_id"],
+            wait_for_checkpoints=None,
+            rows_in=before["rows"],
+            table_exists=True,
+            group_offsets=Seq([before["group_offsets"], after["group_offsets"]]),
+            end_offsets=Seq([before["topic_end_offsets"],
+                             after["topic_end_offsets"]]),
+            committed_checkpoint_id=Seq([before["committed_checkpoint_id"],
+                                         after["committed_checkpoint_id"]]),
+            checkpoint_counts=before["checkpoints"],
+            kill_taskmanager=None, wait_for_taskmanager=None,
+            wait_for_restore=restart["checkpoints_after"],
+            restore_point=restart["restored_from"],
+            job_state=restart["job_state_after_restart"],
+            wait_until_stable=(landed["rows"], 12.5),
+            failure_causes=restart["failure_causes"],
+            # what `measure` reads
+            seqs_in=seqs,
+            one=landed["distinct_npi"],
+            trino=[{"npi": k, "seq": v} for k, v in held.items()],
+            files_in=landed["files"],
+            cancel=None, delete_topic=None)
+        monkeypatch.setattr(exp1, "lab", fake)
+        monkeypatch.setattr(exp1, "jobs", _JobsStub())
+
+        rebuilt = exp1.run_config(cfg, exp)
+
+        assert set(rebuilt) == set(record), (
+            f"fields differ: {sorted(set(rebuilt) ^ set(record))}")
+        for field in sorted(record):
+            want = record[field]
+            if field == "landed" and want.get("missing_seq_runs"):
+                want = dict(want, missing_seq_runs=[tuple(r) for r in
+                                                    want["missing_seq_runs"]])
+            assert rebuilt[field] == want, (
+                f"config {index} field {field}:\n  rebuilt {rebuilt[field]!r}"
+                f"\n  shipped {record[field]!r}")
+        assert fake.unused() == [], (
+            f"the replay set up answers the run never reached: {fake.unused()}")
+        # The kill is the experiment. A run_config that never killed anything
+        # would measure a cold start and look identical in the results.
+        assert "kill_taskmanager" in fake.calls
+        assert "wait_for_restore" in fake.calls
+
+
+class TestTheSavepointTimelineReplays:
+    """exp2's three observation functions, against the timeline they recorded.
+
+    `sample` is where experiment 2's finding is actually made: it reads the
+    table, the snapshots and the consumer lag at one moment, and the lag is
+    what an on-call dashboard shows. During the frozen window it reads zero
+    while the table is thousands of rows behind, and that juxtaposition is the
+    result.
+    """
+
+    def test_sample_rebuilds_each_recorded_stage(self):
+        import exp2_savepoint_loss as exp2
+        stages = load("exp2_savepoint_loss.json")["stages"]
+        # Two of the seven carry no job fields, 04_job_stopped and
+        # 05_third_batch_produced_while_down, because at those moments there
+        # was no job to ask. `sample` adds them only when given a job id, and
+        # a replay that passed one anyway would be testing a stage the run
+        # never took.
+        assert sum("job_state" in s for s in stages) == 5, stages
+        for record in stages:
+            want = {k: v for k, v in record.items() if k != "stage"}
+            job_id = "a-job" if "job_state" in record else None
+            fake = _lab_for_sample(record)
+            exp2.lab, original = fake, exp2.lab
+            try:
+                got = exp2.sample(job_id=job_id)
+            finally:
+                exp2.lab = original
+            assert got == want, f"{record['stage']}: {got} != {want}"
+
+    def test_a_table_with_no_snapshots_reports_no_rows(self):
+        # The first stage of any run, and the guard that stops `snapshots[-1]`
+        # raising on an empty table.
+        import exp2_savepoint_loss as exp2
+        fake = _ReplayLab(snapshots=[], table_exists=False,
+                          group_offsets={}, end_offsets={}, say=None)
+        exp2.lab, original = fake, exp2.lab
+        try:
+            got = exp2.sample()
+        finally:
+            exp2.lab = original
+        assert got["rows_visible_to_trino"] == 0
+        assert got["snapshots"] == 0
+        assert got["max_committed_checkpoint_id"] is None
+        assert "job_state" not in got, (
+            "no job id was given, so no job fields belong in the record")
+
+    def test_stage_is_the_sample_plus_its_label(self):
+        import exp2_savepoint_loss as exp2
+        record = next(s for s in load("exp2_savepoint_loss.json")["stages"]
+                      if "job_state" in s)
+        fake = _lab_for_sample(record)
+        exp2.lab, original = fake, exp2.lab
+        try:
+            got = exp2.stage(record["stage"], job_id="a-job")
+        finally:
+            exp2.lab = original
+        assert got == record
+
+    def test_watch_rebuilds_the_frozen_window_and_stops_when_it_clears(self,
+                                                                      monkeypatch):
+        """The timeline is the whole finding, and it is a stopping rule.
+
+        `watch` samples until the restored job's checkpoint id passes the
+        watermark. Read down the recorded timeline: the id starts at 7 against
+        a watermark of 19, the table sits at 16,000 rows looking healthy, and
+        the moment the id reaches 20 the table jumps to 32,000. A `watch` that
+        stopped early would report the freeze as shorter than it was, and a
+        `watch` that never stopped would hang.
+        """
+        import exp2_savepoint_loss as exp2
+        shipped = load("exp2_savepoint_loss.json")
+        timeline = shipped["timeline_after_restore"]
+        watermark = shipped["watermark_before_restore"]
+
+        class Clock:
+            def __init__(self):
+                self.t = 900.0
+                self.i = 0
+
+            def time(self):
+                return self.t
+
+            def sleep(self, seconds):
+                # advance to the moment the next sample was recorded
+                self.i += 1
+                if self.i < len(timeline):
+                    self.t = 900.0 + timeline[self.i]["seconds_since_restore"]
+
+        clock = Clock()
+        Seq = _ReplayLab.Seq
+        fake = _ReplayLab(
+            snapshots=Seq(_snapshots_for(r) for r in timeline),
+            table_exists=True,
+            rows_in=Seq(r["rows_visible_to_trino"] for r in timeline),
+            group_offsets=Seq(_offsets_with_lag(r["consumer_lag"])[0]
+                              for r in timeline),
+            end_offsets=Seq(_offsets_with_lag(r["consumer_lag"])[1]
+                            for r in timeline),
+            job_state=Seq(r["job_state"] for r in timeline),
+            latest_checkpoint_id=Seq(r["latest_completed_checkpoint_id"]
+                                     for r in timeline),
+            checkpoint_counts=Seq({"failed": r["checkpoints_failed"]}
+                                  for r in timeline),
+            say=None)
+        monkeypatch.setattr(exp2, "lab", fake)
+        monkeypatch.setattr(exp2, "time", clock)
+
+        got = exp2.watch("restored-job", watermark)
+
+        assert got == timeline, "the replayed timeline is not the recorded one"
+        assert len(got) == len(timeline)
+        assert got[-1]["latest_completed_checkpoint_id"] > watermark
+        assert all(r["latest_completed_checkpoint_id"] <= watermark
+                   for r in got[:-1]), (
+            "it stopped at the FIRST id above the watermark, which is the "
+            "boundary the finding is about")
+        assert fake.unused() == [], fake.unused()
+
+    def test_watch_refuses_a_job_that_never_clears_the_watermark(self,
+                                                                monkeypatch):
+        """The falsifier. Returning a short timeline instead of raising is
+        exactly the silent-loss shape this experiment exists to expose."""
+        import exp2_savepoint_loss as exp2
+        stuck = {"rows_visible_to_trino": 16000, "snapshots": 13,
+                 "max_committed_checkpoint_id": 19,
+                 "writing_job_id_on_newest_snapshot": "old-job",
+                 "consumer_lag": 0, "job_state": "RUNNING",
+                 "latest_completed_checkpoint_id": 7, "checkpoints_failed": 1}
+
+        class Clock:
+            def __init__(self):
+                self.t = 0.0
+
+            def time(self):
+                return self.t
+
+            def sleep(self, seconds):
+                self.t += seconds
+
+        monkeypatch.setattr(exp2, "lab", _lab_for_sample(stuck))
+        monkeypatch.setattr(exp2, "time", Clock())
+        with pytest.raises(lab.LabError) as raised:
+            exp2.watch("stuck-job", watermark=19, timeout=30, poll=3)
+        assert "never passed checkpoint 19" in str(raised.value)
+
+
+class TestTheShippedRunsReplayThroughTheCode:
+    """Drive the experiment's own function with the evidence it produced.
+
+    `exp5.run_one` starts a Flink job, watches the Kafka coordinator for five
+    minutes and then derives the result, including `prediction_held`, which is
+    the verdict. Nothing offline can run a Flink job, so the recorded run is
+    replayed through the unchanged function: a stand-in `lab` answers every
+    query out of results/exp5_transaction_timeout.json, and the function has
+    to rebuild that file's stored result from them. The scripts produced the
+    shipped results, so they are exercised as they are rather than
+    rearranged to be convenient to test.
+
+    This is not a test that the code agrees with itself. It is the claim that
+    the shipped evidence is reproducible by the shipped code, which is
+    stronger than the internal-consistency checks elsewhere in this file.
+
+    What is not replayed: `job_id` comes from the cluster and
+    `transaction_samples[i]["seconds"]` is wall clock. The clock is driven
+    from the recording, with each stand-in query advancing it to the second
+    that sample was taken, so the timeline is reproduced rather than re-timed,
+    and the loop stops where the recording stops instead of running the real
+    300 seconds.
+    """
+
+    class _Clock:
+        """time.time()/time.sleep() driven by the recorded timeline."""
+
+        def __init__(self):
+            self.t = 1_000_000.0
+            self.jump_to = None
+
+        def time(self):
+            return self.t
+
+        def sleep(self, seconds):
+            # After the last recorded sample, step past the run window so the
+            # loop ends exactly where the recording does instead of asking for
+            # a sample that was never taken.
+            self.t = self.jump_to if self.jump_to is not None else self.t + seconds
+
+    class _FakeLab:
+        def __init__(self, record, clock, started):
+            self.record = record
+            self.clock = clock
+            self.started = started
+            self.samples = record["transaction_samples"]
+            self.taken = 0
+            self.cancelled = []
+            self.topics = []
+
+        # -- the calls run_one makes, in the order it makes them -------------
+        def say(self, *args, **kwargs):
+            pass
+
+        def create_topic(self, topic, partitions=1):
+            self.topics.append((topic, partitions))
+
+        def submit(self, sql, key):
+            assert isinstance(sql, str) and sql.strip(), (
+                "run_one submitted an empty job")
+            return self.record["job_id"]
+
+        def job_state(self, job_id):
+            assert job_id == self.record["job_id"]
+            return self.record["final_job_state"]
+
+        def transaction_states(self, name):
+            sample = self.samples[self.taken]
+            self.taken += 1
+            # advance to the moment this sample was actually taken
+            self.clock.t = self.started + sample["seconds"]
+            if self.taken == len(self.samples):
+                self.clock.jump_to = self.started + self.record["run_seconds"] + 1
+            return _txns_that_reproduce(sample)
+
+        def checkpoint_counts(self, job_id):
+            return self.record["checkpoints"]
+
+        def failure_causes(self, job_id):
+            return self.record["failure_causes"]
+
+        def consume_count(self, topic, isolation):
+            key = ("records_readable_committed" if isolation == "read_committed"
+                   else "records_written_uncommitted")
+            return self.record[key]
+
+        def cancel(self, job_id):
+            self.cancelled.append(job_id)
+
+    @pytest.mark.parametrize("run_key", ["timeout_below_interval",
+                                         "timeout_above_interval"])
+    def test_exp5_run_one_rebuilds_the_run_it_recorded(self, run_key,
+                                                       monkeypatch):
+        import exp5_transaction_timeout as exp5
+
+        shipped = load("exp5_transaction_timeout.json")
+        record = shipped["runs"][run_key]
+        cfg = next(c for c in exp5.RUNS if c["key"] == run_key)
+
+        clock = self._Clock()
+        started = clock.t
+        fake = self._FakeLab(record, clock, started)
+        monkeypatch.setattr(exp5, "lab", fake)
+        monkeypatch.setattr(exp5, "time", clock)
+
+        rebuilt = exp5.run_one(cfg)
+
+        # the loop ran exactly as long as the recording, not 300 real seconds
+        assert fake.taken == len(record["transaction_samples"])
+        assert rebuilt["samples_taken"] == record["samples_taken"]
+        # and it cleaned up after itself
+        assert fake.cancelled == [record["job_id"]]
+
+        # Every derived field, checked by name so a new one cannot be added
+        # without this test either covering it or saying it does not.
+        run_local = {"job_id", "transaction_samples"}
+        for field in sorted(set(record) - run_local):
+            assert rebuilt[field] == record[field], (
+                f"{run_key}: run_one rebuilt {field}={rebuilt[field]!r} from "
+                f"the recorded observations; the shipped file says "
+                f"{record[field]!r}")
+
+        # the per-sample derivation too, minus the wall clock
+        for got, want in zip(rebuilt["transaction_samples"],
+                             record["transaction_samples"]):
+            for field in ("states", "ongoing",
+                          "timeouts_registered_on_the_broker"):
+                assert got[field] == want[field]
+
+        # and nothing the shipped record carries was quietly dropped
+        assert set(record) - set(rebuilt) == set(), (
+            f"the shipped record carries fields run_one no longer produces: "
+            f"{sorted(set(record) - set(rebuilt))}")
+
+
+class TestTheCommitIntervalRunsReplay:
+    """`exp3.run_one` derives the file-size block the README publishes.
+
+    `max_data_files_in_one_commit` is what backs the claim that files per
+    commit tracks the writer subtasks and not the data. `findings()` reads
+    it, and this pins the number it reads: run_one counts `added-data-files`
+    per snapshot.
+
+    Replayed the same way as exp5: a stand-in `lab` answers out of the shipped
+    results, and the clock is driven from the two durations the file records,
+    so `feed_seconds`, `events_per_second` and the freshness figure come out
+    exactly rather than approximately.
+    """
+
+    class _Clock:
+        def __init__(self, record):
+            self.t = 500_000.0
+            self.feed = record["feed_seconds"]
+            self.fresh = record["seconds_from_last_record_to_visible_in_trino"]
+
+        def time(self):
+            return self.t
+
+        def sleep(self, seconds):
+            pass
+
+    class _FakeLab:
+        def __init__(self, record, clock):
+            self.record, self.clock = record, clock
+            self.cancelled, self.dropped = [], []
+
+        def say(self, *a, **k):
+            pass
+
+        def drop_table(self, name):
+            self.dropped.append(name)
+
+        def create_topic(self, topic, partitions=1):
+            pass
+
+        def submit(self, sql, key):
+            return self.record["job_id"]
+
+        def wait_for_state(self, job_id, states, timeout=0):
+            return "RUNNING"
+
+        def produce(self, count, topic, providers=None, chunk=None, pause=0):
+            # the feed is what took feed_seconds
+            self.clock.t += self.clock.feed
+            return count
+
+        def wait_for_rows(self, name, rows, timeout=0, poll=1):
+            # and this is the gap the freshness figure measures
+            self.clock.t += self.clock.fresh
+            return rows
+
+        def cancel(self, job_id):
+            self.cancelled.append(job_id)
+
+        def snapshots(self, name):
+            return _snapshots_that_reproduce(self.record)
+
+        def files_in(self, name):
+            return {"data_files": self.record["data_files"],
+                    "data_bytes": self.record["data_bytes"],
+                    "avg_data_file_bytes": self.record["avg_data_file_bytes"]}
+
+        def rows_in(self, name):
+            return self.record["rows"]
+
+        def delete_topic(self, topic):
+            pass
+
+    @pytest.mark.parametrize("run_key", ["interval_5s", "interval_30s",
+                                         "interval_120s",
+                                         "interval_5s_target_1gb",
+                                         "interval_5s_repeat"])
+    def test_run_one_rebuilds_the_run_it_recorded(self, run_key, monkeypatch):
+        import exp3_commit_interval as exp3
+
+        record = load("exp3_commit_interval.json")["runs"][run_key]
+        cfg = next(c for c in exp3.RUNS if c["key"] == run_key)
+        clock = self._Clock(record)
+        fake = self._FakeLab(record, clock)
+        monkeypatch.setattr(exp3, "lab", fake)
+        monkeypatch.setattr(exp3, "time", clock)
+
+        rebuilt = exp3.run_one(cfg)
+
+        assert set(rebuilt) == set(record)
+        for field in sorted(record):
+            if field == "job_id":
+                continue
+            assert rebuilt[field] == record[field], (
+                f"{run_key} field {field}: rebuilt {rebuilt[field]!r}, "
+                f"shipped {record[field]!r}")
+        assert fake.cancelled == [record["job_id"]]
+
+
+def _snapshots_that_reproduce(record):
+    """Snapshots whose added-data-files derive back to the recorded counts.
+
+    Checked for the same reason as the exp5 helper: a shape this does not
+    know must fail here rather than quietly feed run_one something other than
+    what the test claims.
+    """
+    commits = record["commits"]
+    hi, lo = record["max_data_files_in_one_commit"], record["min_data_files_in_one_commit"]
+    added = [lo] * commits
+    added[0] = hi
+    # the total has to be the file count the table actually holds
+    short = record["data_files"] - sum(added)
+    i = 1
+    while short > 0 and i < commits:
+        room = hi - added[i]
+        step = min(room, short)
+        added[i] += step
+        short -= step
+        i += 1
+    assert len(added) == commits, "commit count"
+    assert max(added) == hi and min(added) == lo, "per-commit extremes"
+    assert sum(added) == record["data_files"], (
+        f"reconstructed {sum(added)} data files, the run recorded "
+        f"{record['data_files']}")
+    return [{"summary": {"added-data-files": str(n)}} for n in added]
+
+
+class TestTheExactlyOnceVerdictIsComputed:
+    """`exp1.measure` decides `complete`.
+
+    This is the verdict the whole repository is about: whether the table that
+    landed is the table the seed says should have landed. It is computed in
+    `exp1.measure`, which reads the table through `lab` and then judges it.
+
+    All four shipped configurations record `complete: true`, so replaying them
+    alone would not pin the verdict: a `measure` that hard-coded True would
+    satisfy every one of them. The falsifiers below are what make the replay
+    mean anything: a stale revision, a missing provider, a duplicate and a
+    gap.
+
+    The stand-in `lab` answers the four queries `measure` makes and delegates
+    `duplicates` and `missing_range` to the real module, because those two are
+    the arithmetic under test rather than the I/O around it.
+    """
+
+    class _FakeLab:
+        def __init__(self, seqs, distinct_npi, files, held=None):
+            self.seqs, self.distinct_npi = seqs, distinct_npi
+            self.files, self.held = files, held or {}
+            self.duplicates = lab.duplicates          # the real arithmetic
+            self.missing_range = lab.missing_range
+
+        def seqs_in(self, table_name):
+            return self.seqs
+
+        def one(self, statement):
+            assert "count(DISTINCT npi)" in statement, statement
+            return self.distinct_npi
+
+        def table(self, name):
+            return f"iceberg.roster.{name}"
+
+        def trino(self, statement):
+            assert "SELECT npi, seq" in statement, statement
+            return [{"npi": k, "seq": v} for k, v in self.held.items()]
+
+        def files_in(self, table_name):
+            return self.files
+
+    @staticmethod
+    def _append_seqs(rows, duplicate_seq_rows, missing_seq_runs, events):
+        """Seqs that derive back to the recorded three, checked as built."""
+        missing = {i for run in (missing_seq_runs or []) for i in range(run[0], run[1] + 1)}
+        seqs = [s for s in range(1, events + 1) if s not in missing]
+        seqs = seqs[:rows - duplicate_seq_rows]
+        seqs += seqs[:duplicate_seq_rows]
+        assert len(seqs) == rows
+        assert lab.duplicates(seqs) == duplicate_seq_rows
+        assert lab.missing_range(seqs, 1, events) == [tuple(r) for r in (missing_seq_runs or [])]
+        return seqs
+
+    @pytest.mark.parametrize("index", [0, 1, 2, 3])
+    def test_measure_rebuilds_each_landed_block(self, index, monkeypatch):
+        import exp1_restart_replay as exp1
+
+        shipped = load("exp1_restart_replay.json")
+        config = shipped["configurations"][index]
+        landed = config["landed"]
+        upsert = config["configuration"]["write_mode"] == "upsert on npi"
+        exp = exp1.expected_state(shipped["workload"]["events"],
+                                  shipped["workload"]["providers_in_the_feed"])
+        assert exp["distinct_npi"] == shipped["workload"]["distinct_npi_expected"]
+
+        if upsert:
+            held = dict(list(exp["latest_seq"].items())[:landed["providers_held"]])
+            seqs = sorted(held.values())
+            fake = self._FakeLab(seqs, landed["distinct_npi"], landed["files"], held)
+        else:
+            seqs = self._append_seqs(landed["rows"], landed["duplicate_seq_rows"],
+                                     landed["missing_seq_runs"],
+                                     landed["events_expected"])
+            fake = self._FakeLab(seqs, landed["distinct_npi"], landed["files"])
+
+        monkeypatch.setattr(exp1, "lab", fake)
+        rebuilt = exp1.measure("e1_table", exp, upsert)
+
+        assert set(rebuilt) == set(landed), (
+            f"measure produces {sorted(set(rebuilt) ^ set(landed))} that the "
+            "shipped landed block does not, or the other way round")
+        for field in sorted(landed):
+            want = landed[field]
+            if field == "missing_seq_runs" and want:
+                want = [tuple(r) for r in want]
+            assert rebuilt[field] == want, (
+                f"config {index} field {field}: rebuilt {rebuilt[field]!r}, "
+                f"shipped {landed[field]!r}")
+        assert rebuilt["complete"] is True
+
+    def test_a_duplicate_row_is_not_a_complete_append_table(self, monkeypatch):
+        import exp1_restart_replay as exp1
+        exp = exp1.expected_state(100, 20)
+        seqs = list(range(1, 100)) + [99]            # 100 rows, one a copy
+        monkeypatch.setattr(exp1, "lab", self._FakeLab(seqs, 20, {}))
+        got = exp1.measure("t", exp, upsert=False)
+        assert got["duplicate_seq_rows"] == 1
+        assert got["complete"] is False
+
+    def test_a_gap_is_not_a_complete_append_table(self, monkeypatch):
+        import exp1_restart_replay as exp1
+        exp = exp1.expected_state(100, 20)
+        seqs = [s for s in range(1, 101) if s not in (40, 41, 42)]
+        monkeypatch.setattr(exp1, "lab", self._FakeLab(seqs, 20, {}))
+        got = exp1.measure("t", exp, upsert=False)
+        assert got["missing_seq_runs"] == [(40, 42)], (
+            "the loss is reported as a run, which is the shape of a skipped "
+            "commit")
+        assert got["complete"] is False
+
+    def test_a_missing_provider_is_not_a_complete_upsert_table(self, monkeypatch):
+        import exp1_restart_replay as exp1
+        exp = exp1.expected_state(100, 20)
+        held = dict(list(exp["latest_seq"].items())[:-1])   # one provider short
+        monkeypatch.setattr(exp1, "lab",
+                            self._FakeLab(sorted(held.values()), len(held), {}, held))
+        got = exp1.measure("t", exp, upsert=True)
+        assert got["providers_held"] == exp["distinct_npi"] - 1
+        assert got["complete"] is False
+
+    def test_a_stale_revision_is_not_a_complete_upsert_table(self, monkeypatch):
+        import exp1_restart_replay as exp1
+        exp = exp1.expected_state(100, 20)
+        held = dict(exp["latest_seq"])
+        stale = next(iter(held))
+        held[stale] = held[stale] - 1      # right row count, wrong revision
+        monkeypatch.setattr(exp1, "lab",
+                            self._FakeLab(sorted(held.values()), len(held), {}, held))
+        got = exp1.measure("t", exp, upsert=True)
+        assert got["providers_held"] == exp["distinct_npi"], (
+            "the table is the right SIZE, which is why a row count cannot be "
+            "the completeness measure for an upsert table")
+        assert got["providers_not_carrying_the_latest_record"] == 1
+        assert got["complete"] is False
+
+
+def _txns_that_reproduce(sample):
+    """A coordinator answer that derives back to `sample`.
+
+    Checked as built. If this reconstruction ever stops reproducing the
+    recorded sample (a new field, a shape this does not know), the test must
+    fail here rather than quietly exercise a different input than it claims.
+    """
+    states = list(sample["states"])
+    timeouts = list(sample["timeouts_registered_on_the_broker"])
+    txns, n = {}, 0
+    for state in states:
+        repeats = max(1, sample["ongoing"]) if state == "Ongoing" else 1
+        for _ in range(repeats):
+            txns[f"txn-{n}"] = {"state": state,
+                                "timeout_ms": timeouts[n % len(timeouts)]}
+            n += 1
+    while len({t["timeout_ms"] for t in txns.values()}) != len(set(timeouts)):
+        # more timeouts than transactions built: pad with a state already seen
+        filler = next(s for s in states if s != "Ongoing")
+        txns[f"txn-{n}"] = {"state": filler, "timeout_ms": timeouts[n % len(timeouts)]}
+        n += 1
+
+    assert sorted({t["state"] for t in txns.values()}) == sorted(states)
+    assert sum(1 for t in txns.values() if t["state"] == "Ongoing") == sample["ongoing"]
+    assert sorted({t["timeout_ms"] for t in txns.values()}) == sorted(timeouts)
+    return txns
+
+
+class TestTheEvidenceMatchesTheCodeThatMadeIt:
+    """A results file records the writer count. So does the code that ran.
+
+    Both experiments write `workload.parallelism` into their results, and both
+    start their Flink job with the same number. Both places read one constant,
+    so the evidence cannot record a writer count no job ran at, and this test
+    is what says so.
+    """
+
+    def test_the_recorded_writer_count_is_the_one_the_code_starts(self):
+        import exp2_savepoint_loss as exp2
+        import exp5_transaction_timeout as exp5
+        for module, name in ((exp2, "exp2_savepoint_loss.json"),
+                             (exp5, "exp5_transaction_timeout.json")):
+            recorded = load(name)["workload"]["parallelism"]
+            assert recorded == module.PARALLELISM, (
+                f"{name} records parallelism {recorded} and the code starts "
+                f"its job at {module.PARALLELISM}; the evidence describes a "
+                "run this code does not produce")
+
+
+class TestTheRepositoryDescriptionIsAlsoDerived:
+    """GITHUB_DESCRIPTION.txt is a published surface too.
+
+    `check_readme_numbers.py` re-derives every figure in README.md. The one
+    sentence GitHub shows above the file list carries both a measured figure
+    and the four engine versions: the same claims, on the surface most
+    readers see first and the one nobody edits when a result moves.
+
+    These do not check the prose, which is allowed to be phrased any way. They
+    check that each NUMBER in it is the number the repository can still show.
+    """
+
+    @staticmethod
+    def _description():
+        with open(os.path.join(ROOT, "GITHUB_DESCRIPTION.txt"),
+                  encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_duplicate_count_is_the_one_the_run_recorded(self):
+        landed = load("exp2_savepoint_loss.json")["landed"]["duplicate_rows"]
+        assert f"{landed:,} duplicates" in self._description(), (
+            f"the description does not say {landed:,} duplicates, which is "
+            "what exp2 recorded")
+
+    def test_the_engine_versions_are_the_ones_the_stack_runs(self):
+        # The compose file is the only place that decides these. A description
+        # naming a version the stack does not run is the cheapest possible
+        # false claim and the least likely to be noticed.
+        with open(os.path.join(ROOT, "stack", "compose.yaml"),
+                  encoding="utf-8") as fh:
+            compose = fh.read()
+        text = self._description()
+        for named, in_compose in (("Flink 1.20", "rig-flink:1.20-"),
+                                  ("Iceberg 1.10", "iceberg-rest-fixture:1.10"),
+                                  ("Kafka 4.3", "apache/kafka:4.3"),
+                                  ("Trino 478", "trinodb/trino:478")):
+            assert named in text, f"the description no longer names {named}"
+            assert in_compose in compose, (
+                f"the description says {named} and compose.yaml no longer "
+                f"runs it ({in_compose} is gone)")
+
+    def test_the_flink_base_image_is_pinned_by_patch_and_digest(self):
+        # A moving tag builds a different image on a different day. The base
+        # must name its patch and its digest, and the patch must be the one
+        # the README says the runs used.
+        with open(os.path.join(ROOT, "stack", "flink", "Dockerfile"),
+                  encoding="utf-8") as fh:
+            froms = [line.split()[1] for line in fh
+                     if line.startswith("FROM ")]
+        assert len(froms) == 1, froms
+        m = re.fullmatch(r"flink:(1\.20\.\d+)@sha256:[0-9a-f]{64}", froms[0])
+        assert m, f"the Flink base is not pinned by patch and digest: {froms[0]}"
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+            assert f"Flink {m.group(1)}" in fh.read(), (
+                f"the Dockerfile pins Flink {m.group(1)} and the README does "
+                f"not say so")
+
+
 class TestTheReadmeCheckerStillChecks:
-    """The README checker is the second CI gate, and nothing guarded IT.
+    """The README checker is the second CI gate, and these guard it.
 
-    `check_readme_numbers.py` prints how many strings it derived so that "a
-    version of this script that silently stopped deriving half of them is
-    visible instead of clean"; its own words. Visible to a human reading
-    stdout, yes. Nothing failed: emptying `expected_rows()` left the script
-    printing a smaller count and exiting 0, and pytest never imports it, so
-    both CI gates stayed green with every table row unchecked.
-
-    A printed count is a report. These are the assertion.
+    `check_readme_numbers.py` prints how many strings it derived, which makes
+    a version that stopped deriving half of them visible to a human reading
+    stdout. A printed count is a report; these are the assertion.
     """
 
     @staticmethod
@@ -558,12 +1662,45 @@ class TestTheReadmeCheckerStillChecks:
             "numbers live in prose, not in the tables")
 
     def test_every_headline_number_is_among_the_derived_strings(self):
-        """The four figures the README leads with must each be derived from
-        results/*.json rather than typed. Without this the duplicate count
-        could be any positive integer: 1 or 900,000 both passed."""
+        """The three figures the README leads with must each be derived from
+        results/*.json rather than typed, so the duplicate count cannot be
+        any positive integer the prose happens to say."""
         chk = self._checker()
         derived = " ".join(row for _, row in chk.expected_rows() + chk.prose_facts())
         for needle in ("12,000", "58.1", "8,000"):
             assert needle in derived, (
                 f"{needle} appears in the README but is not derived from the "
                 "results, so nothing ties it to the run that produced it")
+
+    # The three tests above pin the deriver. These two pin the comparison,
+    # which is a different half of the same script: what main() prints is
+    # len(checked) - len(missing), so a comparison that never ran would print
+    # the maximum count and exit 0.
+    #
+    # They come as a pair. A gate that always failed would satisfy the
+    # altered-README test on its own, and a gate that always passed would
+    # satisfy the shipped-README test on its own. Only both together say the
+    # comparison looked.
+
+    def test_the_shipped_readme_passes_the_comparison(self):
+        assert self._checker().main() == 0, (
+            "the shipped README no longer matches the figures derived from "
+            "results/*.json")
+
+    def test_one_altered_figure_makes_the_comparison_fail(self, tmp_path):
+        chk = self._checker()
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+            readme = fh.read()
+        # A table row is one line in the source and is not reflowed, so it
+        # appears in the README exactly as the deriver builds it. If that ever
+        # stops being true this raises StopIteration, so a test that examined
+        # nothing cannot pass.
+        row = next(r for _, r in chk.expected_rows() if r in readme)
+        at = next(i for i, ch in enumerate(row) if ch.isdigit())
+        altered = row[:at] + ("8" if row[at] == "9" else "9") + row[at + 1:]
+        assert altered != row
+        mutated = tmp_path / "README.md"
+        mutated.write_text(readme.replace(row, altered, 1), encoding="utf-8")
+        assert chk.main(readme_path=str(mutated)) == 1, (
+            "one figure was changed and the checker still reported a clean "
+            "README, so the comparison is not running")

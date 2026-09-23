@@ -213,14 +213,23 @@ def expected_rows():
             + rows_exp5(load("exp5_transaction_timeout.json")))
 
 
-def main():
+def main(readme_path=None):
+    """Compare, and return 0 only if every derived string was found.
+
+    `readme_path` is here so the comparison can be tested against a document
+    with a figure altered. The number printed is len(checked) - len(missing),
+    so a comparison that never ran would print the maximum; a gate that
+    cannot be pointed at a document it should reject cannot be shown to be
+    running at all.
+    """
     rows = expected_rows()
     facts = prose_facts()
-    if "--emit" in sys.argv:
+    if readme_path is None and "--emit" in sys.argv:
         for tag, row in rows + facts:
             print(f"{tag}\n{row}")
         return 0
-    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+    with open(readme_path or os.path.join(ROOT, "README.md"),
+              encoding="utf-8") as fh:
         readme = fh.read()
     # Whitespace is normalized on both sides. A prose figure lands wherever the
     # line wrap puts it, so matching raw text would make this script fail on a

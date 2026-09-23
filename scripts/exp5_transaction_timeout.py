@@ -39,6 +39,9 @@ PROVIDERS = 2000
 # does not apply from a test too weak to trigger it, and the transaction state
 # sampled from the broker below is what tells the two apart.
 INTERVAL = "120s"
+# One name for the writer count, as in exp2. A single writer here is what
+# makes the aborted transactions countable.
+PARALLELISM = 1
 RUN_SECONDS = 300
 
 RUNS = [
@@ -67,7 +70,7 @@ def run_one(cfg):
         jobs.kafka_to_kafka(name, IN_TOPIC, cfg["out_topic"],
                             f"{GROUP}-{key}", interval=INTERVAL,
                             transaction_timeout_ms=cfg["transaction_timeout_ms"],
-                            parallelism=1), key)
+                            parallelism=PARALLELISM), key)
     started = time.time()
     state_seen = []
     txn_samples = []
@@ -149,7 +152,7 @@ def main():
                                              "opens a Kafka transaction, so "
                                              "the rule cannot be tested on it",
         "workload": {"events": EVENTS, "partitions": 4,
-                     "checkpoint_interval": INTERVAL, "parallelism": 1},
+                     "checkpoint_interval": INTERVAL, "parallelism": PARALLELISM},
         "runs": {},
     }
     for cfg in RUNS:
