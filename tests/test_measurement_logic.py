@@ -320,7 +320,7 @@ esac
 
 
 class TestTheVerdictsAreComputed:
-    """Three judgments, each pinned against the mutation that quietly
+    """Three judgments, each pinned against the mutation that silently
     re-corrects it.
 
     Every one of these is pure, offline and importable. A verdict-preserving
@@ -367,7 +367,7 @@ class TestTheVerdictsAreComputed:
         move on their own. Against that floor the control moved further, 2
         files and 218 bytes against 0 files and 10 bytes, so the shipped
         verdict is False and the prediction is refuted. Hard-coding the flag to
-        True would quietly correct that.
+        True would silently correct that.
 
         Both directions are asserted because either one alone is satisfied by a
         constant.
@@ -403,10 +403,10 @@ class TestTheVerdictsAreComputed:
 
     def test_a_quiet_window_shorter_than_the_commit_interval_is_refused(
             self, monkeypatch):
-        # lab.py. A streaming table does not move between commits, so a quiet
-        # window shorter than the commit interval settles on a table that is
-        # merely waiting, and reports rows not yet committed as rows that
-        # never arrived.
+        # lab.py. A streaming table does not move between commits, so a
+        # settling window shorter than the commit interval settles on a table
+        # that is merely waiting, and reports rows not yet committed as rows
+        # that never arrived.
         def looked(*a, **kw):
             raise AssertionError(
                 "wait_until_stable polled the table instead of refusing: the "
@@ -429,6 +429,15 @@ class TestTheVerdictsAreComputed:
             "e1_append", quiet_polls=3, poll=0, commit_interval_seconds=-1)
         assert rows == 12000
         assert waited >= 0
+
+    def test_a_table_that_never_appears_has_not_settled(self, monkeypatch):
+        # A missing table reads as 0 rows every poll, which is a "stable"
+        # count. It is a table nobody created, not an empty result.
+        monkeypatch.setattr(lab, "table_exists", lambda name: False)
+        monkeypatch.setattr(lab, "rows_in", lambda name: 0)
+        with pytest.raises(lab.LabError, match="never appeared"):
+            lab.wait_until_stable("e1_append", quiet_polls=3, poll=0,
+                                  timeout=0.05, commit_interval_seconds=-1)
 
 
 class TestJobSql:
@@ -538,7 +547,9 @@ class TestGenerator:
         assert max(npis.count(n) for n in set(npis)) > 1
 
     def test_distinct_providers_get_distinct_npis(self):
-        assert len({gen.npi_for(i) for i in range(500)}) == 500
+        # Every experiment feeds 2,000 provider ids. The hash is reduced mod
+        # 900,000,000, so this is a property of these ids, not a guarantee.
+        assert len({gen.npi_for(i) for i in range(2000)}) == 2000
 
     def test_a_correction_carries_a_later_revision_for_the_same_provider(self):
         plain_npi, plain = gen.event(7, 200, correcting=False)
@@ -566,3 +577,165 @@ class TestExpectedState:
 @pytest.mark.parametrize("seqs,lo,hi", [([], 1, 3), ([1], 1, 1)])
 def test_missing_range_handles_the_degenerate_inputs(seqs, lo, hi):
     lab.missing_range(seqs, lo, hi)
+
+
+class TestConsumerLagIsMeasuredOrAbsent:
+    """exp2's "consumer lag read zero" is a headline figure, so a lag of zero
+    has to mean the committed offsets were read and matched the log end. A
+    describe that failed, or a group with nothing committed, is no reading.
+    """
+
+    def test_a_failed_describe_raises(self, monkeypatch):
+        def failed(*args, **kw):
+            return subprocess.CompletedProcess(
+                args, 1, stdout="", stderr="Error: Executing consumer group "
+                "command failed due to org.apache.kafka.common.errors."
+                "TimeoutException")
+
+        monkeypatch.setattr(lab, "sh", failed)
+        with pytest.raises(lab.LabError, match="TimeoutException"):
+            lab.group_offsets("rig-e2")
+
+    def test_no_committed_offsets_is_not_a_lag_of_zero(self, monkeypatch):
+        import exp2_savepoint_loss as exp2
+
+        class NothingCommitted:
+            @staticmethod
+            def table_exists(name):
+                return False
+
+            @staticmethod
+            def group_offsets(group):
+                return {}
+
+            @staticmethod
+            def end_offsets(topic):
+                return {0: 4000, 1: 4000}
+
+        monkeypatch.setattr(exp2, "lab", NothingCommitted)
+        got = exp2.sample()
+        assert got["consumer_lag"] is None, (
+            "no partition had a committed offset, so there was no lag to "
+            "read; a 0 here is the reading the experiment reports as a "
+            "finding")
+
+    def test_a_group_that_does_not_exist_yet_has_nothing_committed(
+            self, monkeypatch):
+        def absent(*args, **kw):
+            return subprocess.CompletedProcess(
+                args, 1, stdout="", stderr="Error: Consumer group 'rig-e2' "
+                "does not exist.")
+
+        monkeypatch.setattr(lab, "sh", absent)
+        assert lab.group_offsets("rig-e2") == {}
+
+
+class TestACopyThatFailedStopsTheSubmit:
+    """The SQL file is copied into the JobManager and then run from a fixed
+    path there. If the copy fails, the container still holds the PREVIOUS
+    file, and running it submits the wrong job under a success message.
+    """
+
+    STUB = """#!/usr/bin/env bash
+case "$1" in
+  cp) echo "no such file" >&2; exit 1 ;;
+  exec) echo "Job ID: 0123456789abcdef0123456789abcdef"; exit 0 ;;
+esac
+"""
+
+    def _stub_path(self, tmp_path):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "docker"
+        stub.write_text(self.STUB)
+        stub.chmod(0o755)
+        return f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+
+    def test_flink_sql_sh_exits_non_zero_and_runs_nothing(self, tmp_path):
+        env = dict(os.environ, PATH=self._stub_path(tmp_path))
+        done = subprocess.run(
+            ["bash", os.path.join(ROOT, "scripts", "flink_sql.sh"),
+             "sql/e0_smoke_append.sql"],
+            capture_output=True, text=True, env=env, cwd=ROOT)
+        assert done.returncode != 0
+        assert "Job ID" not in done.stdout
+
+    def test_submit_raises_instead_of_returning_the_old_job(self, monkeypatch):
+        def cp_fails(*args, **kw):
+            if args[:2] == ("docker", "cp"):
+                return subprocess.CompletedProcess(args, 1, "", "no such file")
+            return subprocess.CompletedProcess(
+                args, 0, "Job ID: 0123456789abcdef0123456789abcdef", "")
+
+        monkeypatch.setattr(lab, "sh", cp_fails)
+        with pytest.raises(lab.LabError, match="no such file"):
+            lab.submit("SELECT 1;", "copy_fails")
+
+
+class TestAPartialCommitIntervalRunKeepsTheOthers:
+    """exp3 takes a subset of run keys on the command line. The runs it did
+    not re-measure are evidence too, and a partial run must keep them."""
+
+    def test_rerunning_one_key_keeps_the_rest(self, monkeypatch, tmp_path):
+        (tmp_path / "results").mkdir()
+        with open(os.path.join(ROOT, "results", "exp3_commit_interval.json"),
+                  encoding="utf-8") as fh:
+            shipped = json.load(fh)
+        (tmp_path / "results" / "exp3_commit_interval.json").write_text(
+            json.dumps(shipped))
+        rerun = dict(shipped["runs"]["interval_30s"], commits=999)
+
+        monkeypatch.setattr(lab, "ROOT", str(tmp_path))
+        monkeypatch.setattr(exp3, "run_one", lambda cfg: rerun)
+        monkeypatch.setattr(sys, "argv", ["exp3", "interval_30s"])
+        exp3.main()
+
+        written = json.loads(
+            (tmp_path / "results" / "exp3_commit_interval.json").read_text())
+        assert set(written["runs"]) == set(shipped["runs"])
+        assert written["runs"]["interval_30s"]["commits"] == 999
+        assert written["runs"]["interval_5s"] == shipped["runs"]["interval_5s"]
+        assert "findings" in written, (
+            "the merged runs are a full set, so the findings are recomputed")
+
+
+class TestProduceProvesTheLogGrew:
+    """lab.produce, the feed every experiment starts with. Its count is the
+    one the broker's end offsets confirm, not the generator's line count."""
+
+    def _install(self, monkeypatch, copy_rc=0, grew_by=3):
+        def sh(*args, **kw):
+            if args[0] == "python3":
+                return subprocess.CompletedProcess(args, 0, "a|1\nb|2\nc|3\n", "")
+            if args[:2] == ("docker", "cp"):
+                return subprocess.CompletedProcess(args, copy_rc, "", "cp: denied")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        ends = iter([{0: 10}, {0: 10 + grew_by}])
+        monkeypatch.setattr(lab, "sh", sh)
+        monkeypatch.setattr(lab, "end_offsets", lambda topic: next(ends))
+
+    def test_it_returns_the_count_the_log_grew_by(self, monkeypatch):
+        self._install(monkeypatch)
+        assert lab.produce(3, "e1.t") == 3
+
+    def test_a_log_that_grew_short_is_a_failure(self, monkeypatch):
+        self._install(monkeypatch, grew_by=2)
+        with pytest.raises(lab.LabError, match="produced 2 records"):
+            lab.produce(3, "e1.t")
+
+    def test_a_failed_copy_is_a_failure(self, monkeypatch):
+        self._install(monkeypatch, copy_rc=1)
+        with pytest.raises(lab.LabError, match="cp: denied"):
+            lab.produce(3, "e1.t")
+
+
+class TestRowsLostIsDerived:
+    """The expire_snapshots row's "Rows lost" cell, which that run did not
+    record, derived from the counts it did."""
+
+    def test_rows_lost_counts_expected_rows_that_did_not_land_once(self):
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        import check_readme_numbers as chk
+        landed = {"rows_expected": 12000, "rows": 11990, "duplicate_rows": 5}
+        assert chk._rows_lost(landed) == 15

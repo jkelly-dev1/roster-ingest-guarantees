@@ -12,7 +12,10 @@ set -uo pipefail
 # escape sequences around its own [INFO] lines. They are invisible on a
 # terminal and they are still there in anything that captures this output, so
 # removing them afterward means editing evidence rather than not producing it.
-docker cp "$1" rig-flink-jm:/tmp/job.sql >/dev/null
+# A failed copy leaves the PREVIOUS job.sql in the container, and running it
+# would submit the wrong job under a success message.
+docker cp "$1" rig-flink-jm:/tmp/job.sql >/dev/null \
+  || { echo "copy of $1 failed; nothing was submitted" >&2; exit 1; }
 docker exec rig-flink-jm /opt/flink/bin/sql-client.sh -f /tmp/job.sql 2>&1 \
   | sed -e 's/\x1b\[[0-9;]*m//g' \
   | grep -v -e '^$' -e 'Command history' -e 'Flink SQL>' -e '^ *$'

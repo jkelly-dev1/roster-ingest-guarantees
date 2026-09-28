@@ -1,4 +1,4 @@
--- End-to-end smoke: Kafka -> Flink -> Iceberg. Append mode, exactly-once.
+-- Smoke test: Kafka -> Flink -> Iceberg. Append mode, exactly-once.
 SET 'execution.checkpointing.interval' = '10s';
 SET 'pipeline.name' = 'e0-smoke-append';
 

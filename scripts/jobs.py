@@ -82,11 +82,11 @@ def settings(name, interval="10s", mode="EXACTLY_ONCE", parallelism=2,
              savepoint_path=None, extra=None):
     """SET statements, in the order the SQL Client applies them.
 
-    Restart attempts are raised per job and that is deliberate. Three of these
-    experiments kill the TaskManager on purpose. The cluster default gives up
-    after ten attempts, and a job that gives up produces a FAILED status,
-    which is the one outcome none of these experiments is about. Every
-    interesting result here happens while the job is still RUNNING.
+    Restart attempts are raised per job. Three of these experiments kill the
+    TaskManager as their treatment. The cluster default gives up after ten
+    attempts, and a job that gives up produces a FAILED status, which is the
+    one outcome none of these experiments is about. Every interesting result
+    here happens while the job is still RUNNING.
     """
     lines = [
         f"SET 'pipeline.name' = '{name}';",

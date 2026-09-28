@@ -13,8 +13,8 @@ its own: it reads it back out of the table's snapshot history, matching on its
 own flink.job-id. A running job holds the value in memory, so expiring the
 snapshot changes nothing WHILE IT RUNS. The exposure is the next restart, when
 the job goes looking for a watermark that has been deleted. Then the job kill
-goes in on purpose, after the expiry, and the question is whether the replay
-it does on recovery is suppressed or committed twice.
+goes in after the expiry, and the question is whether the replay it does on
+recovery is suppressed or committed twice.
 
 Part b; deleting files the writer has not committed yet. A streaming writer
 has open and closed Parquet files that no snapshot references, because the
@@ -234,8 +234,8 @@ def part_b():
             f"unreferenced data objects on disk")
 
     # Nine polls of ten seconds, against a sixty second checkpoint interval.
-    # The quiet window has to outlast the interval: a shorter one settles on a
-    # table that is merely between commits, and reports rows that have not
+    # The settling window has to outlast the interval: a shorter one settles on
+    # a table that is merely between commits, and reports rows that have not
     # been committed yet as rows the procedure removed.
     settled, _ = lab.wait_until_stable(table_name, quiet_polls=9, poll=10,
                                        timeout=600, commit_interval_seconds=60)

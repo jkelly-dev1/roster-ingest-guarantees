@@ -92,8 +92,8 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       CLUSTER_ID: rig-single-node-cluster
-    ports:
-      - "127.0.0.1:9092:9092"
+    # No host port. Every script reaches the broker with `docker exec`, and
+    # the listener advertises `kafka:9092`, a name only this network resolves.
     # A named volume, not a container layer. Every restart experiment in this
     # repository depends on the Kafka log outliving the broker process. Without
     # it, the first `docker compose up` after an image change silently wipes

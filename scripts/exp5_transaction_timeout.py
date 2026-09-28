@@ -19,8 +19,8 @@ asks it to commit. The records were written. They are in the log. They are
 inside an aborted transaction, so a read_committed consumer will never see
 them, and the writing job may not notice at all.
 
-Measured both ways on purpose. Counting the output topic at read_uncommitted
-shows what the producer wrote; counting it at read_committed shows what a
+Measured both ways. Counting the output topic at read_uncommitted shows
+what the producer wrote; counting it at read_committed shows what a
 downstream consumer is allowed to read. Only the second number is the
 pipeline's output, and the difference between them is the whole finding.
 """

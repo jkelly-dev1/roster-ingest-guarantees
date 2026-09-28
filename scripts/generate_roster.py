@@ -53,16 +53,20 @@ def pick(n, field, options):
 
 
 def npi_for(provider_id):
-    """A 10 digit NPI. Distinct providers get distinct NPIs by construction."""
+    """A 10 digit NPI, from a hash of the provider id reduced to nine digits.
+
+    Two ids CAN share an NPI; the reduction does not prevent it. The 2,000
+    provider ids every experiment uses have none, and a test holds that.
+    """
     return str(1000000000 + (h(provider_id, "npi") % 900000000))
 
 
 def event(seq, provider_count, correcting=False):
     """One roster event.
 
-    Provider_count is deliberately smaller than the event count. Providers
-    recur: the table is not a log of distinct entities, it is a stream of
-    assertions about a smaller set of them.
+    Provider_count is smaller than the event count. Providers recur: the
+    table is not a log of distinct entities, it is a stream of assertions
+    about a smaller set of them.
     """
     provider_id = h(seq, "provider") % provider_count
     npi = npi_for(provider_id)

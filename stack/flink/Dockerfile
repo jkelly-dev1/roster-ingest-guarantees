@@ -30,7 +30,7 @@ ARG ICEBERG_VERSION=1.10.0
 ARG KAFKA_CONNECTOR_VERSION=3.4.0-1.20
 ARG M2=https://repo1.maven.org/maven2
 
-# The digests are LITERALS and deliberately not ARGs. The versions above are
+# The digests are LITERALS, not ARGs. The versions above are
 # ARGs because a reader may reasonably want to try another one; a checksum that
 # could be overridden from the command line is a gate with an off switch, and
 # `--build-arg SHA=<whatever the attacker served>` would pass while looking
@@ -66,8 +66,8 @@ RUN set -eux; \
 
 # The checkpoint directory must exist in the image, owned by the FLINK user.
 # Docker seeds an empty named volume from the image path it is mounted over,
-# ownership included. Without this the volume mounts as root, Flink runs as
-# uid 9999, and the job dies with "Failed to create directory for shared
+# owner and group included. Without this the volume mounts as root, Flink runs
+# as uid 9999, and the job dies with "Failed to create directory for shared
 # state" (a message that points at the state backend rather than at a
 # permission problem).
 RUN mkdir -p /flink-state/checkpoints /flink-state/savepoints \

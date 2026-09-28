@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Produce roster events into Kafka, keyed by NPI.
 #
-# Keyed on purpose. Kafka orders within a partition, not across them. A roster
-# feed whose corrections can overtake the record they correct is a bug that
-# only shows up once the topic has more than one partition, which is exactly
-# when nobody is looking for it.
+# Keyed. Kafka orders within a partition, not across them. A roster feed
+# whose corrections can overtake the record they correct is a bug that only
+# shows up once the topic has more than one partition, which is exactly when
+# nobody is looking for it.
 #
 # The events go in as a file, not down a pipe. Piping the generator straight
 # into `docker exec -I kafka-console-producer` hangs: the producer does not

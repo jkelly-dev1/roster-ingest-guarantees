@@ -42,19 +42,20 @@ partitions, and one `docker kill` of the TaskManager while the feed was still
 running. The table is read back through Trino, never through Flink. A commit
 only the engine that wrote it can read is not an Iceberg commit.
 
-| Configuration | Rows landed | Duplicate seq rows | Rows sharing an NPI | Delete files | Predicted | Verdict |
+| Configuration | Rows landed | Duplicate seq rows | Extra rows per NPI | Delete files | Predicted | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
 | `at-least-once` + append | 12,000 | 0 | 10,002 | 0 | duplicate rows | REFUTED |
 | `at-least-once` + upsert on npi | 1,998 | 0 | 0 | 12 | no duplicates, idempotent by key | held |
 | `exactly-once` + append | 12,000 | 0 | 10,002 | 0 | no duplicates | held |
 | `exactly-once` + upsert on npi | 1,998 | 0 | 0 | 12 | no duplicates | held |
 
-`Rows sharing an NPI` is not an error in the append rows. The feed makes 12,000
-assertions about 1,998 distinct providers, so an append table is supposed to
-hold about six rows for the same doctor. The column is there to show what upsert
-on the natural key does instead: 1,998 rows, one per provider, each carrying
-that provider's LATEST record: checked against the generator's own answer rather
-than against whatever arrived.
+`Extra rows per NPI` is the row count less the distinct NPIs, and it is not an
+error in the append rows. The feed makes 12,000 assertions about 1,998 distinct
+providers, so an append table is supposed to hold about six rows for the same
+doctor. The column is there to show what upsert on the natural key does
+instead: 1,998 rows, one per provider, each carrying that provider's LATEST
+record: checked against the generator's own answer rather than against whatever
+arrived.
 
 The prediction in the first row was wrong and it is still in the code.
 At-least-once checkpointing was predicted to duplicate rows. It landed exactly
@@ -99,8 +100,8 @@ behind the job's back instead.
 
 | Step | Committed offsets, summed | Rows in the table | Duplicate rows |
 | --- | --- | --- | --- |
-| the first job, all events landed | 6,000 | 6,000 | 0 |
-| committed offsets rewound to the start of the log | 0 | 6,000 | 0 |
+| the first job, all events landed | 6,000 | 6,000 | not measured |
+| committed offsets rewound to the start of the log | 0 | 6,000 | not measured |
 | restored from the retained checkpoint | 6,000 | 6,000 | 0 |
 | rewound again, restarted from `group-offsets` | 0 | 12,000 | 6,000 |
 
@@ -159,7 +160,7 @@ The one blemish is honest and is not the signal either: a checkpoint can fail at
 the moment of restore, and in one recorded run one did. It had already happened
 before the first sample, and the counter does not move again for the whole
 freeze, so the thing an operator might notice fires at the restart everybody
-expects to be noisy, and stays quiet through the minute that actually matters.
+expects to be noisy, and says nothing through the minute that actually matters.
 
 What the committer does with a checkpoint at or below the watermark is nothing,
 and nothing is not discarding. The files stay in its state and the first
@@ -221,7 +222,7 @@ ordering. The conclusion itself is not asserted.
 
 Put beside the effect that is real, the residual is a rounding error: moving
 the interval from 5 seconds to 120 changed the average file size by a factor of
-five and a half, and raising the target changed it by under two percent. That
+5.6, and raising the target changed it by under two percent. That
 comparison is only available because the repeat run gives the residual
 something to be measured against.
 
@@ -245,7 +246,7 @@ Both predictions were wrong, and in both cases the measurement says why. A null
 result that does not say what the procedure had to work with is not a result, it
 is a shrug.
 
-- `expire_snapshots` took the table from five snapshots to one and the
+- `expire_snapshots` took the table from 5 snapshots to 1 and the
   watermark did not move. IT CANNOT. `flink.max-committed-checkpoint-id` lives
   in the summary of the newest snapshot, and expiring snapshots keeps the
   newest one by definition. The real exposure was supposed to be the next
@@ -295,14 +296,14 @@ held outright, and it is also the most complete failure in the repository: a
 pipeline that loses one hundred percent of its output while every instrument
 says it is fine.
 
-Two things make that a result rather than a coincidence. The margin is
-twenty-four to one: a narrow one cannot distinguish a rule that does not apply
-from a test too gentle to trigger it, and there is no way to tell those apart
-from the record afterward. And the broker is asked directly rather than trusted:
-`kafka-transactions.sh describe` reports the timeout a coordinator actually
-registered against each transactional id, and the states it moved through. The
-short run registered 5,000 ms, exactly as requested, and its transactions ended
-in `CompleteAbort`; the long run's ended in `CompleteCommit`.
+Two things make that a result rather than a coincidence. The margin is 24 to
+one: with a narrow one, a rule that does not apply and a test too gentle to
+trigger it look the same, and the record afterward cannot tell them apart. And
+the broker is asked directly instead of trusted: `kafka-transactions.sh
+describe` reports the timeout a coordinator actually registered against each
+transactional id, and the states it moved through. The short run registered
+5,000 ms, the value the job set, and its transactions ended in `CompleteAbort`;
+the long run's ended in `CompleteCommit`.
 
 ## Claims backed by tests
 
@@ -320,7 +321,7 @@ Kafka or Flink.
 | Every provider carries its latest record, checked against the seed | `tests/test_results_invariants.py::TestRestartReplay::test_every_provider_carries_its_latest_record` (mutation-checked: keep one older revision and it fails) |
 | The checkpointing mode changed nothing at all | `tests/test_results_invariants.py::TestRestartReplay::test_the_checkpointing_mode_changed_nothing` |
 | The generator still produces the bytes the results describe, pinned by digest rather than by comparing two runs of the same code | `tests/test_measurement_logic.py::TestGenerator::test_the_generator_still_produces_the_bytes_the_results_describe` (mutation-checked: change `SALT` and it fails) |
-| The README checker still derives every published figure, so it cannot pass by checking nothing | `tests/test_results_invariants.py::TestTheReadmeCheckerStillChecks::test_it_still_derives_a_row_for_every_published_table_row`, `::TestTheReadmeCheckerStillChecks::test_every_headline_number_is_among_the_derived_strings` (mutation-checked: empty `expected_rows()` or `prose_facts()` and it fails) |
+| The README checker still derives every published figure, so it cannot pass by checking nothing | `tests/test_results_invariants.py::TestTheReadmeCheckerStillChecks::test_it_still_derives_a_row_for_every_published_table_row`, `::TestTheReadmeCheckerStillChecks::test_it_still_derives_the_prose_figures`, `::TestTheReadmeCheckerStillChecks::test_every_headline_number_is_among_the_derived_strings`, `::TestTheReadmeCheckerStillChecks::test_every_body_figure_is_derived_in_the_sentence_that_states_it` (mutation-checked: empty `expected_rows()` and the first fails; empty `prose_facts()` and the other three fail; drop one body sentence's row and the fourth fails) |
 | The at-least-once prediction stays recorded as refuted | `tests/test_results_invariants.py::TestRestartReplay::test_the_at_least_once_prediction_is_recorded_as_refuted` (mutation-checked: "correct" it in the results and it fails) |
 | Upsert pays for idempotence in equality delete files | `tests/test_results_invariants.py::TestRestartReplay::test_upsert_pays_for_itself_in_delete_files` |
 | Append writes no delete files at all | `tests/test_results_invariants.py::TestRestartReplay::test_append_writes_no_delete_files_at_all` |
@@ -336,6 +337,7 @@ Kafka or Flink.
 | The freeze ended exactly at the first checkpoint above the watermark | `tests/test_results_invariants.py::TestSavepointRestore::test_the_freeze_ended_at_the_first_checkpoint_above_the_watermark` (mutation-checked: move one sample across the boundary and it fails) |
 | Nothing was discarded: the backlog committed in one lump | `tests/test_results_invariants.py::TestSavepointRestore::test_the_backlog_committed_in_one_lump` |
 | The job never reported anything wrong | `tests/test_results_invariants.py::TestSavepointRestore::test_the_job_never_reported_anything_wrong` |
+| A frozen-window sample that read no committed offsets stops the run, naming the stage, and its table row reads "not read" | `tests/test_results_invariants.py::TestTheSavepointTimelineReplays::test_a_frozen_sample_with_no_committed_offsets_is_refused`, `::TestTheSavepointTimelineReplays::test_freeze_window_rebuilds_the_recorded_window` and `::TestTheReadmeCheckerStillChecks::test_a_sample_with_no_lag_prints_not_read` (mutation-checked: remove the refusal and the first fails; summarize the freeze from its first sample and the second fails; print the lag unguarded and the third fails) |
 | Data written after the watermark cleared still lands | `tests/test_results_invariants.py::TestSavepointRestore::test_data_written_after_the_watermark_cleared_still_lands` |
 | Every commit-interval run landed the whole feed | `tests/test_results_invariants.py::TestCommitInterval::test_every_run_landed_the_whole_feed` |
 | A longer interval gives fewer and larger files | `tests/test_results_invariants.py::TestCommitInterval::test_a_longer_interval_gives_fewer_and_larger_files` |
@@ -381,14 +383,14 @@ Kafka or Flink.
 | The recorded writer count is the one the code starts its job with | `tests/test_results_invariants.py::TestTheEvidenceMatchesTheCodeThatMadeIt::test_the_recorded_writer_count_is_the_one_the_code_starts` (mutation-checked: change `PARALLELISM` and the shipped evidence stops matching) |
 | The landed table is judged complete only when it is | `tests/test_results_invariants.py::TestTheExactlyOnceVerdictIsComputed::test_measure_rebuilds_each_landed_block` (every shipped block is complete, so the falsifiers in the next two rows are what a hard-coded verdict fails) |
 | A duplicate row, or a gap, is not a complete append table | `tests/test_results_invariants.py::TestTheExactlyOnceVerdictIsComputed::test_a_duplicate_row_is_not_a_complete_append_table` and `tests/test_results_invariants.py::TestTheExactlyOnceVerdictIsComputed::test_a_gap_is_not_a_complete_append_table` (mutation-checked: hard-code the verdict and they fail) |
-| A missing provider, or a stale revision, is not a complete upsert table | `tests/test_results_invariants.py::TestTheExactlyOnceVerdictIsComputed::test_a_stale_revision_is_not_a_complete_upsert_table` (the table is the right SIZE and still wrong, which is why a row count cannot be the measure) |
+| A missing provider, a stale revision, or a second row for one provider is not a complete upsert table | `tests/test_results_invariants.py::TestTheExactlyOnceVerdictIsComputed::test_a_missing_provider_is_not_a_complete_upsert_table`, `::TestTheExactlyOnceVerdictIsComputed::test_a_stale_revision_is_not_a_complete_upsert_table` and `::TestTheExactlyOnceVerdictIsComputed::test_a_second_row_for_a_provider_is_not_a_complete_upsert_table` (the table is the right SIZE and still wrong, which is why a row count cannot be the measure) |
 | The shipped transaction-timeout runs replay through the code that recorded them | `tests/test_results_invariants.py::TestTheShippedRunsReplayThroughTheCode::test_exp5_run_one_rebuilds_the_run_it_recorded` (mutation-checked: neutralize `run_one` and it fails) |
 | The shipped commit-interval runs replay through the code that recorded them | `tests/test_results_invariants.py::TestTheCommitIntervalRunsReplay::test_run_one_rebuilds_the_run_it_recorded` (mutation-checked: neutralize `run_one` and it fails) |
-| Every number in this README is derived from `results/*.json` | `scripts/check_readme_numbers.py`, run in CI, and `tests/test_results_invariants.py::TestTheReadmeCheckerStillChecks::test_the_shipped_readme_passes_the_comparison` (mutation-checked: change one figure in the README and it fails) |
+| Every figure the five experiments measured is derived from `results/*.json` in this README | `scripts/check_readme_numbers.py`, run in CI, and `tests/test_results_invariants.py::TestTheReadmeCheckerStillChecks::test_the_shipped_readme_passes_the_comparison` (mutation-checked: change one figure in the README and it fails) |
 
 ## Running it
 
-The tests need pytest and a POSIX shell. Three of them drive
+The tests need pytest and a POSIX shell. Four of them drive
 `scripts/produce.sh` against a stand-in broker, which is a shell script and a
 `docker` that answers on a PATH of the test's own making, not Docker.
 Reproducing the measurements needs Docker and about 6 GB of free memory.
@@ -406,7 +408,7 @@ docker exec rig-kafka /opt/kafka/bin/kafka-topics.sh \
   --partitions 4 --replication-factor 1
 ```
 
-Then, from the repository root, the end-to-end smoke test:
+Then, from the repository root, the smoke test from Kafka through to Trino:
 
 ```
 ./scripts/produce.sh 1000
@@ -430,10 +432,12 @@ six and eleven minutes. `SAMPLE_RUN.md` is the captured output of exactly
 those commands.
 
 The stack binds every port to loopback and picks unusual ones, the Flink UI on
-8091, Trino on 8092, the catalog on 8182, MinIO on 9010 and 9011, so it does not
-collide with anything already running. The MinIO credentials in
-`stack/compose.yaml` are fixtures, not secrets: MinIO needs a root user to start
-and the whole stack is bound to 127.0.0.1.
+8091, Trino on 8092, the catalog on 8182, MinIO on 9010 and 9011, so it does
+not collide with anything already running. Kafka publishes no port to the host:
+every script reaches it with `docker exec`, and its listener advertises the
+in-network name `kafka`, which a client on the host could not resolve anyway.
+The MinIO credentials in `stack/compose.yaml` are fixtures, not secrets: MinIO
+needs a root user to start and the whole stack is bound to 127.0.0.1.
 
 ### Five traps in this stack
 
@@ -460,7 +464,7 @@ reader building the same stack loses time to them in the same way.
   containers as orphans, and taking one down removes them. `compose.yaml` sets
   an explicit `name:` for that reason.
 
-## What this does not measure
+## Limits
 
 - **One machine, one broker, four partitions.** Nothing here says what happens
   across a real cluster. Every timing and freshness figure carries that
@@ -485,7 +489,7 @@ reader building the same stack loses time to them in the same way.
 - **Byte totals move slightly between runs.** Parquet file sizes vary with
   write parallelism. The qualitative results reproduce; the byte figures in
   the tables come from the recorded run in `results/`, and section 3 measures
-  that variation rather than assuming it away.
+  that variation instead of assuming it away.
 
 ## Related repositories
 
@@ -504,9 +508,10 @@ in four disagreeing rosters are the same provider, and where to draw the
 matching line once a false match is priced above a missed one. It needs a
 single Postgres container and none of the stack here.
 
-All three follow the same rules: no claim without a test, mutation checks on the
-tests that matter, every number re-derived from the shipped results by script,
-and predictions recorded before the run so the refuted ones survive.
+All three follow the same rules: a test behind every claim, mutation checks on
+the tests that matter, every figure the experiments measured re-derived from
+the shipped results by script, and predictions recorded before the run so the
+refuted ones survive.
 
 ## License
 

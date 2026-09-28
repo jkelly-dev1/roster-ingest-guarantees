@@ -34,6 +34,8 @@ therefore includes the commit and the catalog round trip, which is what a
 downstream reader actually waits for.
 """
 
+import json
+import os
 import time
 
 import lab
@@ -112,7 +114,7 @@ def run_one(cfg):
         "min_data_files_in_one_commit": min(added),
         "rows": lab.rows_in(table_name),
         # The clock starts at the last record written to Kafka and stops when
-        # a Trino query can see it, so it is an END TO END figure and not a
+        # a Trino query can see it, so it is a PIPELINE figure and not a
         # commit latency.
         "seconds_from_last_record_to_visible_in_trino": freshness,
         "job_id": job_id,
@@ -177,7 +179,13 @@ def main():
                      "providers_in_the_feed": PROVIDERS,
                      "parallelism": PARALLELISM},
     }
+    # A partial run replaces only the runs it measured. The others stay as
+    # recorded: they are evidence, and the findings need all five.
     runs = {}
+    path = os.path.join(lab.ROOT, "results", "exp3_commit_interval.json")
+    if set(wanted) != {c["key"] for c in RUNS} and os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            runs = dict(json.load(fh).get("runs", {}))
     for cfg in RUNS:
         if cfg["key"] in wanted:
             runs[cfg["key"]] = run_one(cfg)

@@ -4,7 +4,7 @@ results/*.json is evidence committed to the repository. These tests assert
 three kinds of thing about it:
 
   The failure really happened. Three of these experiments kill a TaskManager
-  or restore from a stale savepoint on purpose, and an experiment whose
+  or restore from a stale savepoint as their treatment, and an experiment whose
   induced failure MISSED looks exactly like one that passed. Every claim about
   surviving a restart is guarded by an assertion that the restart occurred.
 
@@ -16,7 +16,7 @@ three kinds of thing about it:
   The refuted predictions stay refuted. Two of the five predictions written
   down before the runs were wrong. Those are the only parts of this repository
   a reader could not have got from the documentation, and a later tidy-up must
-  not be able to quietly correct them.
+  not be able to silently correct them.
 """
 
 import json
@@ -865,13 +865,11 @@ class TestTheOffsetsAreMonitoringRunReplays:
 
     def test_the_offsets_are_read_before_the_job_is_canceled(self,
                                                               monkeypatch):
-        """The ordering the code has a comment about, made mechanical.
-
-        A canceled job's consumer group has no members, and
-        kafka-consumer-groups then prints a block the parser reads as no
-        offsets at all, indistinguishable from the offsets having been wiped,
-        which is the very thing this experiment is measuring. The read
-        therefore has to come first.
+        """The order the code reads offsets and cancels jobs in, made
+        mechanical: the restored job's offsets are read while it runs, the
+        figure a dashboard shows. The first job's are read after its cancel,
+        and the recorded read holds all four partitions, so a canceled group
+        does not read as empty.
         """
         import exp1_restart_replay as exp1
 
@@ -914,8 +912,9 @@ class TestTheRestartRunsReplay:
     `configurations[i]` of the shipped results.
     """
 
-    @pytest.mark.parametrize("index", [0, 1, 2, 3])
-    def test_run_config_rebuilds_each_configuration(self, index, monkeypatch):
+    @staticmethod
+    def _replay(index, monkeypatch, produce=0):
+        """The stand-in lab for configuration `index`, installed on exp1."""
         import exp1_restart_replay as exp1
 
         shipped = load("exp1_restart_replay.json")
@@ -933,7 +932,7 @@ class TestTheRestartRunsReplay:
 
         Seq = _ReplayLab.Seq
         fake = _ReplayLab(
-            say=None, drop_table=None, create_topic=None, produce=0,
+            say=None, drop_table=None, create_topic=None, produce=produce,
             submit=record["job_id"],
             wait_for_checkpoints=None,
             rows_in=before["rows"],
@@ -958,7 +957,11 @@ class TestTheRestartRunsReplay:
             cancel=None, delete_topic=None)
         monkeypatch.setattr(exp1, "lab", fake)
         monkeypatch.setattr(exp1, "jobs", _JobsStub())
+        return exp1, cfg, exp, record, fake
 
+    @pytest.mark.parametrize("index", [0, 1, 2, 3])
+    def test_run_config_rebuilds_each_configuration(self, index, monkeypatch):
+        exp1, cfg, exp, record, fake = self._replay(index, monkeypatch)
         rebuilt = exp1.run_config(cfg, exp)
 
         assert set(rebuilt) == set(record), (
@@ -977,6 +980,18 @@ class TestTheRestartRunsReplay:
         # would measure a cold start and look identical in the results.
         assert "kill_taskmanager" in fake.calls
         assert "wait_for_restore" in fake.calls
+
+    def test_a_feed_that_failed_fails_the_run(self, monkeypatch):
+        # The feed runs on a thread, and an exception on a thread goes to
+        # stderr and nowhere else. produce() raising is its end-offset guard
+        # firing: the broker took fewer events than were sent.
+        def short_feed(*args, **kwargs):
+            raise lab.LabError("the broker took 5,999 of 6,000 events")
+
+        exp1, cfg, exp, record, fake = self._replay(0, monkeypatch,
+                                                    produce=short_feed)
+        with pytest.raises(lab.LabError, match="5,999 of 6,000"):
+            exp1.run_config(cfg, exp)
 
 
 class TestTheSavepointTimelineReplays:
@@ -1125,6 +1140,29 @@ class TestTheSavepointTimelineReplays:
             exp2.watch("stuck-job", watermark=19, timeout=30, poll=3)
         assert "never passed checkpoint 19" in str(raised.value)
 
+    def test_freeze_window_rebuilds_the_recorded_window(self):
+        import exp2_savepoint_loss as exp2
+        shipped = load("exp2_savepoint_loss.json")
+        got = exp2.freeze_window(shipped["timeline_after_restore"],
+                                 shipped["watermark_before_restore"])
+        assert got == shipped["frozen_window"]
+
+    def test_a_frozen_sample_with_no_committed_offsets_is_refused(self):
+        """A sample that read no committed offsets has no lag. The minimum lag
+        while frozen is a published figure, so the window is refused with the
+        stage it was sampled in, not summarized without it and not left to a
+        TypeError from min()."""
+        import exp2_savepoint_loss as exp2
+        shipped = load("exp2_savepoint_loss.json")
+        timeline = [dict(t) for t in shipped["timeline_after_restore"]]
+        timeline[3]["consumer_lag"] = None
+        with pytest.raises(lab.LabError) as raised:
+            exp2.freeze_window(timeline, shipped["watermark_before_restore"])
+        message = str(raised.value)
+        assert "read no committed offsets" in message
+        assert "06_restored_job_cleared_the_watermark" in message
+        assert f"at {timeline[3]['seconds_since_restore']} s" in message
+
 
 class TestTheShippedRunsReplayThroughTheCode:
     """Drive the experiment's own function with the evidence it produced.
@@ -1255,7 +1293,7 @@ class TestTheShippedRunsReplayThroughTheCode:
                           "timeouts_registered_on_the_broker"):
                 assert got[field] == want[field]
 
-        # and nothing the shipped record carries was quietly dropped
+        # and nothing the shipped record carries was silently dropped
         assert set(record) - set(rebuilt) == set(), (
             f"the shipped record carries fields run_one no longer produces: "
             f"{sorted(set(record) - set(rebuilt))}")
@@ -1363,8 +1401,8 @@ class TestTheCommitIntervalRunsReplay:
 def _snapshots_that_reproduce(record):
     """Snapshots whose added-data-files derive back to the recorded counts.
 
-    Checked for the same reason as the exp5 helper: a shape this does not
-    know must fail here rather than quietly feed run_one something other than
+    Checked for the same reason as the exp5 helper: a shape this does not know
+    must fail here instead of silently feeding run_one something other than
     what the test claims.
     """
     commits = record["commits"]
@@ -1524,13 +1562,39 @@ class TestTheExactlyOnceVerdictIsComputed:
         assert got["providers_not_carrying_the_latest_record"] == 1
         assert got["complete"] is False
 
+    def test_a_second_row_for_a_provider_is_not_a_complete_upsert_table(
+            self, monkeypatch):
+        # Every provider carries its latest record, and one of them ALSO has
+        # an older row. Keyed by npi, the extra row disappears from `held`, so
+        # only the row count can show it.
+        import exp1_restart_replay as exp1
+        exp = exp1.expected_state(100, 20)
+        held = dict(exp["latest_seq"])
+        extra_npi = next(iter(held))
+        rows = [{"npi": k, "seq": v} for k, v in held.items()]
+        rows.insert(0, {"npi": extra_npi, "seq": held[extra_npi] - 1})
+
+        class _TwoRowsForOne(self._FakeLab):
+            def trino(self, statement):
+                assert "SELECT npi, seq FROM" in statement
+                return rows
+
+        seqs = sorted(r["seq"] for r in rows)
+        monkeypatch.setattr(exp1, "lab",
+                            _TwoRowsForOne(seqs, len(held), {}, held))
+        got = exp1.measure("t", exp, upsert=True)
+        assert got["providers_held"] == exp["distinct_npi"]
+        assert got["providers_not_carrying_the_latest_record"] == 0
+        assert got["duplicate_npi_rows"] == 1
+        assert got["complete"] is False
+
 
 def _txns_that_reproduce(sample):
     """A coordinator answer that derives back to `sample`.
 
     Checked as built. If this reconstruction ever stops reproducing the
     recorded sample (a new field, a shape this does not know), the test must
-    fail here rather than quietly exercise a different input than it claims.
+    fail here instead of silently exercising a different input than it claims.
     """
     states = list(sample["states"])
     timeouts = list(sample["timeouts_registered_on_the_broker"])
@@ -1657,22 +1721,70 @@ class TestTheReadmeCheckerStillChecks:
 
     def test_it_still_derives_the_prose_figures(self):
         facts = self._checker().prose_facts()
-        assert len(facts) >= 12, (
+        assert len(facts) >= 31, (
             f"the deriver produces {len(facts)} prose facts; the headline "
             "numbers live in prose, not in the tables")
 
     def test_every_headline_number_is_among_the_derived_strings(self):
-        """The three figures the README leads with must each be derived from
-        results/*.json rather than typed, so the duplicate count cannot be
-        any positive integer the prose happens to say."""
-        chk = self._checker()
-        derived = " ".join(row for _, row in chk.expected_rows() + chk.prose_facts())
-        for needle in ("12,000", "58.1", "8,000"):
-            assert needle in derived, (
-                f"{needle} appears in the README but is not derived from the "
-                "results, so nothing ties it to the run that produced it")
+        """The figures the README leads with must each be derived, IN THE
+        SENTENCE THAT STATES THEM, from results/*.json. Matching the bare
+        number against every derived string passed while the opening
+        paragraph was unchecked: "12,000" is also a table cell, so the lead's
+        duplicate count could say any figure and still be "derived"."""
+        facts = dict(self._checker().prose_facts())
+        assert facts.get("lead:exp2_duplicates") == (
+            "then committed 12,000 duplicate rows")
+        assert facts.get("lead:exp5_records") == (
+            "every one of 8,000 written records unreadable")
+        assert "AT LEAST 58.1 seconds" in facts.get("exp2:freeze_seconds", "")
 
-    # The three tests above pin the deriver. These two pin the comparison,
+    def test_every_body_figure_is_derived_in_the_sentence_that_states_it(self):
+        """A figure derived in a table cell is not derived in the sentence
+        that repeats it. Each of these sentences restates a measured figure,
+        and each needs its own row, or an edit to it passes the comparison."""
+        facts = dict(self._checker().prose_facts())
+        want = {
+            "lead:exp1_feed": "so 2,000 providers generate 12,000 assertions",
+            "exp1:events": "one workload of 12,000 roster events",
+            "exp1:upsert_rows": "instead: 1,998 rows, one per provider",
+            "exp1:at_least_once_rows":
+                "It landed exactly 12,000 with no repeated sequence number",
+            "exp1:resolution": "a single repeat in 12,000 rows (0.008%)",
+            "exp1:bound":
+                "one kill producing zero duplicates puts the one-sided 95% "
+                "bound on per-kill duplication probability at about 0.95",
+            "exp2:lower_bound": "READ 58.1 as a lower bound",
+            "exp2:poll":
+                "The sampler polls about every 7.2 seconds, so 58.1 is simply "
+                "the last sample that still showed 16,000 rows; the freeze "
+                "ended somewhere in [58.1, 65.4]",
+            "exp2:longer_than": "the true freeze is longer than 58.1 by an",
+            "exp3:control_residual":
+                "WHAT THE 218 bytes are made of is feed duration",
+            "exp3:size_factor":
+                "the interval from 5 seconds to 120 changed the average file "
+                "size by a factor of 5.6",
+            "exp4:expired": "took the table from 5 snapshots to 1",
+            "exp4:restart_landed": "landed all 12,000 rows with no duplicate",
+            "exp5:setup": "exactly-once, 8,000 records, and one setting",
+            "exp5:registered":
+                "The short run registered 5,000 ms, the value the job set",
+        }
+        for tag, sentence in want.items():
+            assert facts.get(tag) == sentence, (tag, facts.get(tag))
+
+    def test_a_sample_with_no_lag_prints_not_read(self):
+        """A timeline sample with no committed offsets has no lag. Its row
+        says so, as the first job's rows say "not measured", instead of
+        raising on a None or printing a 0 nothing read."""
+        chk = self._checker()
+        sample = {"seconds_since_restore": 0.0,
+                  "latest_completed_checkpoint_id": 7, "job_state": "RUNNING",
+                  "consumer_lag": None, "rows_visible_to_trino": 16000}
+        rows = chk.rows_exp2({"timeline_after_restore": [sample]})
+        assert rows == [("exp2:0.0", "| 0.0 | 7 | RUNNING | not read | 16,000 |")]
+
+    # The tests above pin the deriver. These two pin the comparison,
     # which is a different half of the same script: what main() prints is
     # len(checked) - len(missing), so a comparison that never ran would print
     # the maximum count and exit 0.

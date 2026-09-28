@@ -80,7 +80,10 @@ def sample(job_id=None):
         # Consumer lag is part of the measurement, not background detail. It
         # is the number an on-call dashboard shows, and during the frozen
         # window it reads zero while the table is thousands of rows behind.
-        "consumer_lag": sum(end.get(p, 0) - o for p, o in committed.items()),
+        # With no committed offset there is no lag to read, and None says so;
+        # a sum over nothing would print the 0 this experiment reports.
+        "consumer_lag": (sum(end.get(p, 0) - o for p, o in committed.items())
+                         if committed else None),
     }
     if job_id:
         rec["job_state"] = lab.job_state(job_id)
@@ -117,6 +120,54 @@ def watch(job_id, watermark, timeout=600, poll=3):
         time.sleep(poll)
     raise lab.LabError(
         f"the restored job never passed checkpoint {watermark} in {timeout}s")
+
+
+def freeze_window(timeline, watermark):
+    """The frozen window, summarized from the restored job's timeline.
+
+    Every sample at or below the watermark must carry a consumer lag. A
+    sample with no committed offsets has no lag to report, and the minimum
+    lag while frozen is a published figure, so a window that holds one is
+    refused here, naming where it was sampled. Otherwise min() fails on it
+    with a TypeError, or the window is summarized without it.
+    """
+    frozen = [t for t in timeline
+              if t["latest_completed_checkpoint_id"] is not None
+              and t["latest_completed_checkpoint_id"] <= watermark]
+    unread = [t for t in frozen if t["consumer_lag"] is None]
+    if unread:
+        raise lab.LabError(
+            "the restored job's timeline, sampled between stages "
+            "05_third_batch_produced_while_down and "
+            "06_restored_job_cleared_the_watermark, read no committed offsets "
+            f"at {unread[0]['seconds_since_restore']} s after its first "
+            "checkpoint, so the consumer lag while frozen was not measured")
+    freeze = {
+        "samples_while_the_checkpoint_id_was_at_or_below_the_watermark":
+            len(frozen),
+        # A censored lower bound, and named as one. This is the last SAMPLE
+        # that still showed the pre-freeze row count, so the freeze ended
+        # somewhere between it and the next sample. The clock also starts at
+        # the restored job's first completed checkpoint rather than at
+        # restore, so the true freeze is longer than this by an unmeasured
+        # amount. Publishing it as a stopwatch reading would overstate the
+        # resolution of a 7-second poll.
+        "seconds_frozen": round(frozen[-1]["seconds_since_restore"], 1)
+            if frozen else 0.0,
+        "rows_while_frozen": sorted({t["rows_visible_to_trino"] for t in frozen}),
+        "job_states_while_frozen": sorted({t["job_state"] for t in frozen}),
+        "checkpoints_failed_while_frozen": max(
+            (t["checkpoints_failed"] for t in frozen), default=0),
+        "min_consumer_lag_while_frozen": min(
+            (t["consumer_lag"] for t in frozen), default=None),
+        "rows_at_the_first_commit_after_the_watermark_cleared":
+            timeline[-1]["rows_visible_to_trino"],
+    }
+    freeze["the_table_never_moved_while_frozen"] = len(freeze["rows_while_frozen"]) == 1
+    freeze["rows_committed_in_one_lump"] = (
+        freeze["rows_at_the_first_commit_after_the_watermark_cleared"]
+        - freeze["rows_while_frozen"][0]) if frozen else 0
+    return freeze
 
 
 def main():
@@ -186,34 +237,7 @@ def main():
     total = 3 * BATCH + SUSTAINED
     gaps = lab.missing_range(seqs, 1, total)
 
-    frozen = [t for t in timeline
-              if t["latest_completed_checkpoint_id"] is not None
-              and t["latest_completed_checkpoint_id"] <= watermark]
-    freeze = {
-        "samples_while_the_checkpoint_id_was_at_or_below_the_watermark":
-            len(frozen),
-        # A censored lower bound, and named as one. This is the last SAMPLE
-        # that still showed the pre-freeze row count, so the freeze ended
-        # somewhere between it and the next sample. The clock also starts at
-        # the restored job's first completed checkpoint rather than at
-        # restore, so the true freeze is longer than this by an unmeasured
-        # amount. Publishing it as a stopwatch reading would overstate the
-        # resolution of a 7-second poll.
-        "seconds_frozen": round(frozen[-1]["seconds_since_restore"], 1)
-            if frozen else 0.0,
-        "rows_while_frozen": sorted({t["rows_visible_to_trino"] for t in frozen}),
-        "job_states_while_frozen": sorted({t["job_state"] for t in frozen}),
-        "checkpoints_failed_while_frozen": max(
-            (t["checkpoints_failed"] for t in frozen), default=0),
-        "min_consumer_lag_while_frozen": min(
-            (t["consumer_lag"] for t in frozen), default=None),
-        "rows_at_the_first_commit_after_the_watermark_cleared":
-            timeline[-1]["rows_visible_to_trino"],
-    }
-    freeze["the_table_never_moved_while_frozen"] = len(freeze["rows_while_frozen"]) == 1
-    freeze["rows_committed_in_one_lump"] = (
-        freeze["rows_at_the_first_commit_after_the_watermark_cleared"]
-        - freeze["rows_while_frozen"][0]) if frozen else 0
+    freeze = freeze_window(timeline, watermark)
 
     result = {
         "experiment": "savepoint_loss",

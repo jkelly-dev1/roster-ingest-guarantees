@@ -88,7 +88,10 @@ def measure(table_name, exp, upsert):
         out["providers_expected"] = exp["distinct_npi"]
         out["providers_held"] = len(held)
         out["providers_not_carrying_the_latest_record"] = len(wrong)
-        out["complete"] = (len(held) == exp["distinct_npi"] and not wrong)
+        # `held` is keyed by npi, so a provider with a second, older row
+        # still counts once there. The row count is what shows that row.
+        out["complete"] = (len(held) == exp["distinct_npi"] and not wrong
+                           and out["duplicate_npi_rows"] == 0)
         # No SEQ gap is reported for an upsert table. An upsert table is
         # SUPPOSED to hold one row per provider, so almost every seq is
         # legitimately absent and a gap list over them means nothing. A
@@ -113,11 +116,18 @@ def run_config(cfg, exp):
     lab.drop_table(table_name)
     lab.create_topic(topic, partitions=4)
 
-    feeder = threading.Thread(
-        target=lab.produce,
-        args=(EVENTS, topic),
-        kwargs={"providers": PROVIDERS, "chunk": CHUNK, "pause": PAUSE},
-        daemon=True)
+    # An exception on a thread is printed and dropped, so the feed keeps its
+    # own: produce() raising means the broker took fewer events than sent.
+    feed_failed = []
+
+    def feed():
+        try:
+            lab.produce(EVENTS, topic, providers=PROVIDERS, chunk=CHUNK,
+                        pause=PAUSE)
+        except Exception as exc:
+            feed_failed.append(exc)
+
+    feeder = threading.Thread(target=feed, daemon=True)
     feeder.start()
 
     sql = jobs.ingest(f"e1-{key}", topic, group, table_name,
@@ -150,6 +160,10 @@ def run_config(cfg, exp):
             f"job is {lab.job_state(job_id)}")
 
     feeder.join(timeout=600)
+    if feeder.is_alive():
+        raise lab.LabError(f"the feed into {topic} was still running at 600s")
+    if feed_failed:
+        raise feed_failed[0]
     rows, settled_in = lab.wait_until_stable(table_name,
                                              commit_interval_seconds=10)
     lab.say(f"settled at {rows} rows after {settled_in}s")
@@ -236,10 +250,9 @@ def part_b():
     rows_after_restore, _ = lab.wait_until_stable(
         table_name, commit_interval_seconds=10)
     seqs = lab.seqs_in(table_name)
-    # Read the offsets before canceling. A canceled job's consumer group has
-    # no members, and kafka-consumer-groups then prints a describe block this
-    # parser reads as no offsets at all, which is indistinguishable from the
-    # offsets having been wiped.
+    # Read the offsets while the restored job is still running, so the figure
+    # is the one a dashboard shows during the run. A canceled job's offsets
+    # stay readable: the first job's were read after its cancel above.
     offsets_after_restore = lab.group_offsets(group)
     lab.cancel(restored_job)
     lab.say(f"after restoring from the checkpoint: {rows_after_restore} rows, "

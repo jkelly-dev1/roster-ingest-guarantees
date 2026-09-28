@@ -33,3 +33,15 @@ on a single machine. Do not reuse that pair anywhere reachable. The Kafka
 broker and the Iceberg REST catalog run without authentication for the same
 reason and on the same terms. Limitations that the README documents as
 deliberate, out-of-scope seams are noted but may not be actioned.
+
+## Base image
+
+`stack/flink/Dockerfile` pins `flink:1.20.5` by digest
+(`sha256:4edbe20a6954...`), so a rebuild of the tag cannot change the image
+without an edit here. The pin is not kept current on its own. On 2026-09-26 the
+tag was compared and resolved to a newer rebuild of the same version
+(`sha256:957b3e4b2bae...`); the pin was left in place, because the published
+runs were made on an older rebuild still (see the README's Limits on the JDK
+patch). Dependabot's docker entry for `stack/flink` opens a pull request when
+the tag moves, and a person decides whether to take it. The images in
+`stack/compose.yaml` are pinned by version tag, not by digest.

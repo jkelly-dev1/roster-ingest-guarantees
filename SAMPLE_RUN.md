@@ -1,9 +1,10 @@
 # Sample run
 
 Captured output, not retyped. Every command below was executed exactly as it
-appears here and in the README, on 2026-08-21, on one Linux machine with Docker
-Compose: Flink 1.20.5, Iceberg 1.10.0, Kafka 4.3.1, Trino 478, MinIO, all bound to
-loopback. No cloud account and no paid API was involved in any of it.
+appears here, on 2026-08-21 except the test-suite block (2026-09-27), on one
+Linux machine with Docker Compose: Flink 1.20.5, Iceberg 1.10.0, Kafka 4.3.1,
+Trino 478, MinIO, all bound to loopback. No cloud account and no paid API was
+involved in any of it.
 
 What was altered: nothing. Two things need saying anyway, because both would
 otherwise look like editing.
@@ -25,7 +26,7 @@ below, so this is a capture of a cold start and not of a warm one.
 Nothing here needs Docker. It reads the shipped `results/*.json` and the pure
 measurement functions.
 
-This test-suite block was captured on 2026-09-23. The suite pins every
+This test-suite block was captured on 2026-09-27. The suite pins every
 function in all five experiment scripts by replaying the runs they recorded:
 each one is driven by a stand-in `lab` answering out of results/*.json and has
 to rebuild the block it produced. Everything below this is the 2026-08-21
@@ -33,17 +34,19 @@ capture, because re-running it needs the stack.
 
 ```
 $ ./envs/bin/pytest -q
-........................................................................ [ 47%]
-........................................................................ [ 95%]
-.......                                                                  [100%]
-151 passed in 0.82s
+........................................................................ [ 42%]
+........................................................................ [ 85%]
+........................                                                 [100%]
+168 passed in 1.12s
 
 $ python3 scripts/check_readme_numbers.py
 
-39 of 39 derived figures found verbatim in README.md (27 table rows, 12 in prose)
+58 of 58 derived figures found verbatim in README.md (27 table rows, 31 in prose)
 ```
 
 ## Bringing the stack up
+
+Not re-run by CI: it needs the live Docker Compose stack, which CI does not start.
 
 ```
 $ cd stack && docker compose up -d
@@ -105,11 +108,13 @@ WARNING: Due to limitations in metric names, topics with a period ('.') or under
 Created topic roster.updates.
 ```
 
-## The end-to-end smoke test
+## The smoke test, Kafka through to Trino
 
 One thousand keyed roster events into Kafka, read by Flink, landed in Iceberg,
 and read back through Trino. Reading it with a second engine is the check that
 matters: a commit only Flink can parse is not an Iceberg commit.
+
+Not re-run by CI: it needs the live Docker Compose stack, which CI does not start.
 
 ```
 $ ./scripts/produce.sh 1000
@@ -195,6 +200,8 @@ Four configurations, one `docker kill` of the TaskManager in each while the
 feed was still running, then the offsets rewound to the start of the log
 behind the job's back.
 
+Not re-run by CI: it needs the live Docker Compose stack, which CI does not start.
+
 ```
 $ PYTHONPATH=scripts ./envs/bin/python scripts/exp1_restart_replay.py
 Part A: four configurations, one kill each
@@ -233,6 +240,8 @@ wrote results/exp1_restart_replay.json
 
 ## Experiment 2: what an old savepoint really does
 
+Not re-run by CI: it needs the live Docker Compose stack, which CI does not start.
+
 ```
 $ PYTHONPATH=scripts ./envs/bin/python scripts/exp2_savepoint_loss.py
   01_first_batch_landed: 4000 rows, watermark 1, 1 snapshots, lag 0
@@ -258,6 +267,8 @@ Five runs over the same sustained feed of sixty thousand events. The last two
 are the control and the noise floor: the same interval with the target file
 size raised to 1 GB, and the same configuration run again unchanged.
 
+Not re-run by CI: it needs the live Docker Compose stack, which CI does not start.
+
 ```
 $ PYTHONPATH=scripts ./envs/bin/python scripts/exp3_commit_interval.py
   --- interval_5s: interval 5s, target file size Iceberg default
@@ -275,6 +286,8 @@ wrote results/exp3_commit_interval.json
 
 ## Experiment 4: maintenance against a live writer
 
+Not re-run by CI: it needs the live Docker Compose stack, which CI does not start.
+
 ```
 $ PYTHONPATH=scripts ./envs/bin/python scripts/exp4_maintenance_live_writer.py
   --- part A: expire_snapshots against a live writer
@@ -291,6 +304,8 @@ wrote results/exp4_maintenance_live_writer.json
 ```
 
 ## Experiment 5: transaction timeout against checkpoint interval
+
+Not re-run by CI: it needs the live Docker Compose stack, which CI does not start.
 
 ```
 $ PYTHONPATH=scripts ./envs/bin/python scripts/exp5_transaction_timeout.py

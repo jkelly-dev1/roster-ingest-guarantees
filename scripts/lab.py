@@ -10,7 +10,7 @@ Three rules shaped this file, and each one cost a debugging session.
   is not evidence. A row a second engine can read out of the catalog is. Every
   count in every result file comes back through Trino.
 
-  A check that cannot run must refuse, never pass quietly. The wait helpers
+  A check that cannot run must refuse, never pass silently. The wait helpers
   raise on timeout instead of returning whatever they happened to see. An
   experiment that reads an empty table and reports a clean run is the exact
   failure this repository is about, and it is silent by construction.
@@ -136,10 +136,10 @@ def snapshots(name):
     the Iceberg committer compares against, and experiment 2 is entirely about
     what happens when a restored job's checkpoint ids fall at or below it.
     """
-    # the summary is cast to JSON on purpose. Trino's JSON output format
-    # cannot serialize a map column at all (it fails with "No ObjectCodec
-    # defined for the generator", which names Jackson and not the query), so
-    # the cast happens in SQL and the string is parsed here.
+    # the summary is cast to JSON. Trino's JSON output format cannot
+    # serialize a map column at all (it fails with "No ObjectCodec defined
+    # for the generator", which names Jackson and not the query), so the
+    # cast happens in SQL and the string is parsed here.
     rows = trino(
         f"SELECT snapshot_id, operation, CAST(summary AS JSON) AS summary "
         f"FROM {meta(name, 'snapshots')} ORDER BY committed_at")
@@ -193,7 +193,7 @@ def objects_under(prefix="warehouse"):
     no credentials, and listing through it returns Access Denied as a JSON
     line with type "error". An unauthenticated listing therefore yields an
     empty dict, which is indistinguishable from an empty bucket, so the error
-    RAISES here rather than being skipped. Reading the credentials from
+    RAISES here instead of being skipped. Reading the credentials from
     $MINIO_ROOT_USER inside the container keeps compose.yaml the single place
     they are written down.
     """
@@ -300,7 +300,10 @@ def end_offsets(topic):
 def group_offsets(group):
     """partition -> COMMITTED offset for a consumer group, or {} if none.
 
-    This number is the subject of experiment 1 part C. Flink commits it on
+    A describe that FAILED raises instead of returning {}: an empty answer
+    reads as "nothing committed", and experiment 2 turns that into a lag.
+
+    This number is the subject of experiment 1 part B. Flink commits it on
     every completed checkpoint and then never reads it back on recovery: the
     offsets that matter live in the checkpoint. The two are easy to confuse
     because a monitoring dashboard has nothing else to show.
@@ -308,6 +311,13 @@ def group_offsets(group):
     proc = sh("docker", "exec", KAFKA,
               "/opt/kafka/bin/kafka-consumer-groups.sh", "--bootstrap-server",
               "localhost:9092", "--describe", "--group", group)
+    if proc.returncode != 0:
+        # A group no job has joined yet has nothing committed, which is an
+        # answer. Any other failure is not.
+        if "does not exist" in proc.stdout + proc.stderr:
+            return {}
+        raise LabError(f"describe of group {group} failed:\n"
+                       + proc.stdout + proc.stderr)
     found = {}
     for line in proc.stdout.splitlines():
         parts = line.split()
@@ -393,8 +403,10 @@ def produce(count, topic, start=1, providers=2000, corrections_from=None,
     tmp = f"/tmp/rig_events_{topic}.jsonl"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(gen.stdout)
-    sh("docker", "cp", tmp, f"{KAFKA}:/tmp/events.jsonl")
+    copied = sh("docker", "cp", tmp, f"{KAFKA}:/tmp/events.jsonl")
     os.unlink(tmp)
+    if copied.returncode != 0:
+        raise LabError("copy of the events file failed:\n" + copied.stderr)
 
     send = (f"/opt/kafka/bin/kafka-console-producer.sh "
             f"--bootstrap-server localhost:9092 --topic {topic} "
@@ -414,7 +426,7 @@ def produce(count, topic, start=1, providers=2000, corrections_from=None,
     # The exit code is not the check: kafka-console-producer writes its
     # complaints to stderr and still exits 0, so the only honest proof that
     # the records reached the log is that the log got longer by exactly as
-    # many. A restart experiment fed by a producer that quietly wrote nothing
+    # many. A restart experiment fed by a producer that wrote nothing
     # reads an empty topic and reports a clean run.
     landed = sum(end_offsets(topic).values()) - before
     if landed != count:
@@ -447,8 +459,11 @@ def submit(sql_text, label):
     path = f"/tmp/rig_{label}.sql"
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(sql_text)
-    sh("docker", "cp", path, f"{FLINK_JM}:/tmp/job.sql")
+    copied = sh("docker", "cp", path, f"{FLINK_JM}:/tmp/job.sql")
     os.unlink(path)
+    # A failed copy leaves the previous job.sql in the container.
+    if copied.returncode != 0:
+        raise LabError(f"copy of {label} failed:\n" + copied.stderr)
     proc = sh("docker", "exec", FLINK_JM, "/opt/flink/bin/sql-client.sh",
               "-f", "/tmp/job.sql")
     out = _ANSI.sub("", proc.stdout + proc.stderr)
@@ -483,6 +498,9 @@ def wait_for_checkpoints(job_id, n, timeout=300):
     Counting completed checkpoints is not the same as counting Iceberg
     commits: a checkpoint whose commit the committer skips still completes.
     Experiment 2 turns on exactly that difference.
+
+    Refuses, as wait_for_restore does, when the job reaches FAILED, CANCELED
+    or FINISHED: no further checkpoint can complete after that.
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -499,8 +517,13 @@ def wait_for_rows(name, expected, timeout=300, poll=3):
     """Wait until Trino can see `expected` rows. Refuses on timeout.
 
     This is the freshness clock in experiment 3 and the barrier everywhere
-    else. It reads through Trino on purpose: waiting on a Flink metric would
-    only prove that Flink thinks it is finished.
+    else. It reads through Trino: waiting on a Flink metric would only
+    prove that Flink thinks it is finished.
+
+    `poll` is not checked against the commit interval, unlike
+    wait_until_stable: this waits for a count to be REACHED, and a short poll
+    only reads more often. A short window is wrong only when the question is
+    whether a count has stopped moving.
     """
     start = time.time()
     deadline = start + timeout
@@ -560,29 +583,44 @@ def wait_until_stable(name, quiet_polls=3, poll=5, timeout=420,
     comes back several polls running, and the count is read through Trino so
     that settling means settled IN THE CATALOG, not in a Flink buffer.
 
-    The quiet window must be longer than the commit interval, and this refuses
-    when it is not. A streaming table does not move BETWEEN commits, so a
-    quiet window shorter than the interval settles on a table that is merely
-    waiting for its next commit, and reports rows not yet committed as rows
-    that never arrived.
+    The settling window must be longer than the commit interval, and this
+    refuses when it is not. A streaming table does not move BETWEEN commits, so
+    a settling window shorter than the interval settles on a table that is
+    merely waiting for its next commit, and reports rows not yet committed as
+    rows that never arrived.
     """
     if quiet_polls * poll <= commit_interval_seconds:
         raise LabError(
             f"a {quiet_polls * poll}s quiet window cannot settle a table that "
             f"commits every {commit_interval_seconds}s")
     start = time.time()
-    last, same = None, 0
+    last, same, seen = None, 0, False
     while time.time() - start < timeout:
-        now = rows_in(name) if table_exists(name) else 0
+        # A table that does not exist is not a table of 0 rows, and its
+        # "count" never moves. Only an existing table can settle.
+        if not table_exists(name):
+            last, same = None, 0
+            time.sleep(poll)
+            continue
+        seen = True
+        now = rows_in(name)
         same = same + 1 if now == last else 0
         last = now
         if same >= quiet_polls:
             return last, round(time.time() - start, 1)
         time.sleep(poll)
+    if not seen:
+        raise LabError(f"{name} never appeared in {timeout}s")
     raise LabError(f"{name} never settled: still moving at {last} rows")
 
 
 def wait_for_state(job_id, states, timeout=180):
+    """Wait until the job is in one of `states`. Refuses on timeout.
+
+    Terminal states are not refused here, unlike wait_for_restore and
+    wait_for_checkpoints: the caller names the states it is waiting for, and
+    a caller waiting for CANCELED is waiting for a terminal state.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         st = job_state(job_id)
@@ -605,6 +643,9 @@ def savepoint(job_id, cancel_job=False, timeout=180):
     The REST call is ASYNCHRONOUS: it returns a request id, and the path only
     exists once the request reports COMPLETED. Reading the response of the
     trigger call and moving on gives you a directory that is not there yet.
+
+    The job's state is not checked first: a job that cannot take a savepoint
+    makes the request report a failure cause, and that is refused below.
     """
     req = rest(f"/jobs/{job_id}/savepoints", method="POST",
                body={"target-directory": "file:///flink-state/savepoints",
@@ -630,11 +671,14 @@ def latest_savepoint_id(job_id, timeout=60):
     plus one. Reading the wrong one puts every later comparison against
     flink.max-committed-checkpoint-id off by one in the direction that hides
     the effect.
+
+    Called only after savepoint() has succeeded, so it checks nothing about
+    the job and refuses only when the statistics never show the savepoint.
     """
     # the field appears late. The savepoint REST request reports COMPLETED
     # before the job's checkpoint statistics carry it, so a single read
     # straight after the trigger returns None. This polls until it is there
-    # and refuses, rather than handing back a None for callers to compare.
+    # and refuses, instead of handing back a None for callers to compare.
     deadline = time.time() + timeout
     while time.time() < deadline:
         latest = rest(f"/jobs/{job_id}/checkpoints")["latest"].get("savepoint")
@@ -651,6 +695,9 @@ def wait_for_watermark(name, target, timeout=420, poll=4):
     commit happens, and a commit only happens when a checkpoint had data. On
     an idle feed the job's counter climbs and the table's watermark stands
     still, so waiting on the counter opens no gap at all.
+
+    `poll` is not checked against the commit interval, for wait_for_rows'
+    reason: this waits for a value to be reached, not to stop moving.
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
