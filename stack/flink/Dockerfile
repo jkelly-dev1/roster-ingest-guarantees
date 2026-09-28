@@ -17,7 +17,7 @@
 # it, so the same Dockerfile would build a different image on a different
 # day. Re-derive the digest with `docker pull flink:1.20.5` and
 # `docker image inspect flink:1.20.5 --format '{{json .RepoDigests}}'`.
-FROM flink:1.20.5@sha256:4edbe20a69541be74b829b0571cc84855e63a5586b51efdef39a21f2dc93812d
+FROM flink:2.2.0@sha256:7ecfab9d5e8ec6987a248b32f6605b5fe9bcb7347aea0d7b1bc3976588408681
 
 # HADOOP is required even though nothing here uses HDFS. Iceberg's Flink
 # catalog factory constructs an org.apache.hadoop.conf.Configuration
